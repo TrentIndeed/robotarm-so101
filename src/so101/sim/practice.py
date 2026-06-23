@@ -99,21 +99,16 @@ class Block:
         return in_circle and resting
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="SO-101 pick-and-place practice sim")
-    parser.add_argument("--keyboard", action="store_true",
-                        help="drive with the keyboard instead of the Xbox controller")
-    parser.add_argument("--seed", type=int, default=None, help="fix block spawn positions")
-    args = parser.parse_args()
-    rng = random.Random(args.seed)
-    mode = "keyboard" if args.keyboard else "xbox"
+def run(keyboard: bool = False, seed: int | None = None) -> None:
+    rng = random.Random(seed)
+    mode = "keyboard" if keyboard else "xbox"
 
     robot = SimRobot()
     model, data = robot.model, robot.data
     block = Block(model, data)
     block.respawn(rng)
 
-    if args.keyboard:
+    if keyboard:
         from .keyboard_control import KeyboardController
         ctrl = KeyboardController()
     else:
@@ -170,6 +165,15 @@ def main() -> None:
     finally:
         ctrl.disconnect()
         print(f"\nDone. Final score: {score}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="SO-101 pick-and-place practice sim")
+    parser.add_argument("--keyboard", action="store_true",
+                        help="drive with the keyboard instead of the Xbox controller")
+    parser.add_argument("--seed", type=int, default=None, help="fix block spawn positions")
+    args = parser.parse_args()
+    run(keyboard=args.keyboard, seed=args.seed)
 
 
 if __name__ == "__main__":

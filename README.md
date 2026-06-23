@@ -27,6 +27,25 @@ object and place it somewhere** — and (later) train a policy on them.
 Each successful run is recorded as one **episode** (synced video from both cameras + joint
 states + actions) into a LeRobot dataset for later policy training.
 
+## One app, every mode
+
+Everything is reachable from a single interactive menu — no flags to remember:
+
+```powershell
+.\scripts\so101.ps1        # or:  python -m so101
+```
+
+```
+  1) Practice in the simulator        5) Train a policy
+  2) Record episodes (sim or real)    6) Cameras: list / preview
+  3) Teleoperate the real arm         7) Calibrate the arm
+  4) Run a trained policy (sim/real)  8) Find the arm's serial port
+```
+
+Each mode prompts for its options (backend, episode count, …) with sensible defaults.
+The individual `python -m so101.*` commands and `scripts/*.ps1` helpers still exist for
+scripting; the app just front-ends them.
+
 ## Practice in simulation first
 
 Before wiring up any motors or cameras, you can rehearse the whole task in a 3D
@@ -35,7 +54,7 @@ simulator driven by the **same** Xbox controller and the **same** control code:
 ```powershell
 pip install -r requirements.txt
 pip install -e .
-.\scripts\practice.ps1
+.\scripts\so101.ps1        # → 1) Practice in the simulator
 ```
 
 A MuJoCo window opens with the arm on a desk, a red block, and a green target pad.
@@ -60,6 +79,7 @@ so101/
 │   ├── cameras.yaml    # gripper + desk camera indices / resolution / fps
 │   └── teleop.yaml     # Xbox axis→joint mapping, speeds, deadzone
 ├── src/so101/
+│   ├── app.py          # `python -m so101` — interactive menu for every mode
 │   ├── controller.py   # Xbox controller → normalized joint commands (shared)
 │   ├── robot.py        # make_robot(sim=…) — THE sim/real swap point
 │   ├── xbox_teleop.py  # drive the real follower
