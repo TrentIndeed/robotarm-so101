@@ -61,14 +61,38 @@ so101/
 │   └── teleop.yaml     # Xbox axis→joint mapping, speeds, deadzone
 ├── src/so101/
 │   ├── controller.py   # Xbox controller → normalized joint commands (shared)
+│   ├── robot.py        # make_robot(sim=…) — THE sim/real swap point
 │   ├── xbox_teleop.py  # drive the real follower
 │   ├── cameras.py      # build LeRobot camera configs from cameras.yaml
-│   ├── record.py       # record pick-and-place episodes into a dataset
-│   └── sim/            # MuJoCo practice game (so101.xml, sim_robot, practice)
-├── scripts/            # Windows PowerShell helpers (practice, calibrate, record)
+│   ├── record.py       # record episodes into a LeRobot dataset (real or --sim)
+│   ├── run_policy.py   # run a trained policy on either backend (real or --sim)
+│   └── sim/            # MuJoCo backend (so101.xml + cameras, sim_robot, practice)
+├── scripts/            # PowerShell helpers (practice, calibrate, record, train, run_policy)
 ├── data/               # recorded datasets (git-ignored)
 └── docs/SETUP.md       # step-by-step first-time setup
 ```
+
+## Sim ↔ real: one flag
+
+The MuJoCo sim and the real arm expose the **same** LeRobot interface
+(`get_observation` / `send_action`, same normalized joints, same `gripper`/`desk`
+camera keys). Everything goes through `make_robot(sim=…)`, so the whole pipeline is
+backend-agnostic — `--sim` is the only thing that changes:
+
+```powershell
+# Collect demos in sim (no hardware), then train, then evaluate — all in sim:
+.\scripts\record_sim.ps1 -NumEpisodes 30
+.\scripts\train.ps1      -RepoId local/so101_pick_place_sim
+.\scripts\run_policy.ps1 -Checkpoint outputs\train\act\checkpoints\last\pretrained_model `
+                         -Dataset local/so101_pick_place_sim
+
+# Later, on the physical arm: same commands, drop -Sim / add -Real.
+```
+
+Sim datasets are byte-for-byte the same format as real ones (parquet joint
+states/actions + encoded MP4 videos for both cameras). The only thing the sim can't
+replicate is the physics/appearance of reality (the sim-to-real gap) — a sim-trained
+policy is a starting point, not a finished real-world policy.
 
 ## Quick start
 
@@ -81,7 +105,7 @@ py -3.12 -m venv .venv
 pip install -r requirements.txt
 
 # 2. Find the arm's serial port, then calibrate it (one time)
-python -m lerobot.find_port            # note the COM port → put it in config/robot.yaml
+.\.venv\Scripts\lerobot-find-port      # note the COM port → put it in config/robot.yaml
 .\scripts\calibrate.ps1
 
 # 3. Identify your cameras, fill in config/cameras.yaml
@@ -97,8 +121,10 @@ python -m so101.cameras --list
 ## Status
 
 - [x] Repo scaffold
-- [x] Practice simulator (PyBullet)
+- [x] Practice simulator (MuJoCo)
+- [x] Sim wired to LeRobot: cameras, dataset recording, policy-eval — all sim/real swappable
 - [ ] Controller mapping rehearsed in sim
+- [ ] First sim dataset recorded + policy trained
 - [ ] Robot port + calibration confirmed
 - [ ] Cameras configured and previewed
 - [ ] Xbox teleop tuned (speeds / deadzone / mapping)

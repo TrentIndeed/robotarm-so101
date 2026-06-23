@@ -37,6 +37,14 @@
     <site name="target" type="box" size="0.05 0.05 0.002" pos="0.2 0.16 0.002"
           rgba="0.1 0.8 0.2 0.55"/>
 
+    <!-- Aim point for the fixed desk camera (sits over the workspace center). -->
+    <body name="ws_center" pos="0.2 0.0 0.04">
+      <site name="ws_center" size="0.001" rgba="0 0 0 0"/>
+    </body>
+
+    <!-- Desk camera: fixed, front-elevated view of the whole workspace. -->
+    <camera name="desk" pos="0.2 -0.45 0.42" mode="targetbody" target="ws_center"/>
+
     <!-- Arm (fixed base). -->
     <body name="base_link" pos="0 0 0">
       <geom type="cylinder" size="0.045 0.03" pos="0 0 0.03" material="dark"/>
@@ -60,6 +68,18 @@
               <body name="gripper_base" pos="0 0 0.04">
                 <joint name="wrist_roll" type="hinge" axis="0 0 1" range="-2.6 2.6"/>
                 <geom type="box" size="0.025 0.015 0.015" pos="0 0 0.015" material="dark"/>
+
+                <!-- Aim point ~6 cm beyond the fingertips (where a grasped object
+                     sits). The wrist camera targets it, so it always frames the
+                     grasp no matter how the arm is posed. -->
+                <body name="grasp_point" pos="0 0 0.10">
+                  <site name="grasp_point" size="0.001" rgba="0 0 0 0"/>
+                </body>
+
+                <!-- Gripper camera: wrist-mounted, offset to the side so the gripper
+                     body doesn't block the view, aimed at the grasp point. -->
+                <camera name="gripper" pos="0.06 0 0.0" mode="targetbody"
+                        target="grasp_point" fovy="75"/>
 
                 <!-- Fingers: slide joints, opposite axes. ctrl 0 = closed, max = open. -->
                 <body name="left_finger" pos="0 0.006 0.03">

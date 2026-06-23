@@ -71,7 +71,7 @@ continue with the hardware steps below.
 ## 2. Find the arm's serial port
 
 ```powershell
-python -m lerobot.find_port
+.\.venv\Scripts\lerobot-find-port
 ```
 
 Unplug the arm when prompted, plug it back in, and note the `COM` port it reports.

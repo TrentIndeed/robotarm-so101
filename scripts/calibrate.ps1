@@ -8,9 +8,7 @@ $ErrorActionPreference = "Stop"
 $cfg = Get-Content "$PSScriptRoot\..\config\robot.yaml" -Raw
 $port = ([regex]::Match($cfg, "(?m)^port:\s*(\S+)")).Groups[1].Value
 $id   = ([regex]::Match($cfg, "(?m)^id:\s*(\S+)")).Groups[1].Value
+$lerobot = "$PSScriptRoot\..\.venv\Scripts\lerobot-calibrate.exe"
 
 Write-Host "Calibrating SO-101 follower on $port (id: $id)..."
-python -m lerobot.calibrate `
-    --robot.type=so101_follower `
-    --robot.port=$port `
-    --robot.id=$id
+& $lerobot --robot.type=so101_follower --robot.port=$port --robot.id=$id
