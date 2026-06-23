@@ -23,6 +23,26 @@ pip install -e .          # makes `python -m so101.*` importable
 If PowerShell blocks the activate script:
 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 
+## 1b. Practice in the simulator (do this first!)
+
+No hardware needed — just the Xbox controller:
+
+```powershell
+.\scripts\practice.ps1
+```
+
+A 3D arm appears on a desk with a red block and a green target pad. Drive the arm,
+pick up the block, and drop it on the pad to score. This runs the *same* controller
+code as the real arm, so it's the ideal place to:
+
+- learn the stick/trigger/button layout,
+- confirm your controller's axis numbers (if a stick feels wrong, run
+  `.\scripts\teleoperate.ps1 -Debug` to read the indices and fix `config/teleop.yaml`),
+- tune `global_speed` / per-joint `speed` / `deadzone` until the arm feels good.
+
+Whatever tuning works in sim carries straight over to hardware. When you're comfy,
+continue with the hardware steps below.
+
 ## 2. Find the arm's serial port
 
 ```powershell

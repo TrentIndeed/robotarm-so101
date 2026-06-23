@@ -1,0 +1,199 @@
+<?xml version="1.0"?>
+<!-- Simplified 6-DOF SO-101 follower for practice in PyBullet.
+     Joint NAMES match the real robot (shoulder_pan, shoulder_lift, elbow_flex,
+     wrist_flex, wrist_roll) plus a two-finger gripper, so the same Xbox mapping
+     drives both sim and hardware. Geometry is approximate — this is for learning
+     to teleoperate, not a kinematically exact twin. Units: meters / radians. -->
+<robot name="so101_sim">
+
+  <material name="grey">  <color rgba="0.35 0.35 0.38 1"/></material>
+  <material name="blue">  <color rgba="0.15 0.45 0.85 1"/></material>
+  <material name="dark">  <color rgba="0.15 0.15 0.18 1"/></material>
+
+  <!-- Base mounted on the desk -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0.03"/>
+      <geometry><cylinder radius="0.045" length="0.06"/></geometry>
+      <material name="dark"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.03"/>
+      <geometry><cylinder radius="0.045" length="0.06"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.5"/>
+      <inertia ixx="1e-3" iyy="1e-3" izz="1e-3" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <joint name="shoulder_pan" type="revolute">
+    <parent link="base_link"/>
+    <child link="shoulder_link"/>
+    <origin xyz="0 0 0.06"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.92" upper="1.92" effort="10" velocity="3"/>
+  </joint>
+
+  <link name="shoulder_link">
+    <visual>
+      <origin xyz="0 0 0.02"/>
+      <geometry><box size="0.06 0.06 0.04"/></geometry>
+      <material name="grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.02"/>
+      <geometry><box size="0.06 0.06 0.04"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.3"/>
+      <inertia ixx="5e-4" iyy="5e-4" izz="5e-4" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <joint name="shoulder_lift" type="revolute">
+    <parent link="shoulder_link"/>
+    <child link="upper_arm"/>
+    <origin xyz="0 0 0.04"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.92" upper="1.92" effort="10" velocity="3"/>
+  </joint>
+
+  <link name="upper_arm">
+    <visual>
+      <origin xyz="0 0 0.06"/>
+      <geometry><box size="0.04 0.04 0.12"/></geometry>
+      <material name="blue"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.06"/>
+      <geometry><box size="0.04 0.04 0.12"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.3"/>
+      <inertia ixx="5e-4" iyy="5e-4" izz="2e-4" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <joint name="elbow_flex" type="revolute">
+    <parent link="upper_arm"/>
+    <child link="forearm"/>
+    <origin xyz="0 0 0.12"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.92" upper="1.92" effort="10" velocity="3"/>
+  </joint>
+
+  <link name="forearm">
+    <visual>
+      <origin xyz="0 0 0.06"/>
+      <geometry><box size="0.035 0.035 0.12"/></geometry>
+      <material name="blue"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.06"/>
+      <geometry><box size="0.035 0.035 0.12"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.25"/>
+      <inertia ixx="4e-4" iyy="4e-4" izz="1.5e-4" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <joint name="wrist_flex" type="revolute">
+    <parent link="forearm"/>
+    <child link="wrist_link"/>
+    <origin xyz="0 0 0.12"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.92" upper="1.92" effort="10" velocity="3"/>
+  </joint>
+
+  <link name="wrist_link">
+    <visual>
+      <origin xyz="0 0 0.02"/>
+      <geometry><box size="0.04 0.04 0.04"/></geometry>
+      <material name="grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.02"/>
+      <geometry><box size="0.04 0.04 0.04"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.15"/>
+      <inertia ixx="2e-4" iyy="2e-4" izz="2e-4" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <joint name="wrist_roll" type="revolute">
+    <parent link="wrist_link"/>
+    <child link="gripper_base"/>
+    <origin xyz="0 0 0.04"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.6" upper="2.6" effort="10" velocity="3"/>
+  </joint>
+
+  <link name="gripper_base">
+    <visual>
+      <origin xyz="0 0 0.015"/>
+      <geometry><box size="0.05 0.03 0.03"/></geometry>
+      <material name="dark"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.015"/>
+      <geometry><box size="0.05 0.03 0.03"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.1"/>
+      <inertia ixx="1e-4" iyy="1e-4" izz="1e-4" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <!-- Two fingers. Prismatic, opposite axes: command 0 = closed, max = open. -->
+  <joint name="left_finger" type="prismatic">
+    <parent link="gripper_base"/>
+    <child link="left_finger_link"/>
+    <origin xyz="0 0 0.03"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="0.03" effort="10" velocity="1"/>
+  </joint>
+
+  <link name="left_finger_link">
+    <visual>
+      <origin xyz="0 0 0.02"/>
+      <geometry><box size="0.012 0.008 0.04"/></geometry>
+      <material name="grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.02"/>
+      <geometry><box size="0.012 0.008 0.04"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.03"/>
+      <inertia ixx="2e-5" iyy="2e-5" izz="2e-5" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <joint name="right_finger" type="prismatic">
+    <parent link="gripper_base"/>
+    <child link="right_finger_link"/>
+    <origin xyz="0 0 0.03"/>
+    <axis xyz="0 -1 0"/>
+    <limit lower="0" upper="0.03" effort="10" velocity="1"/>
+  </joint>
+
+  <link name="right_finger_link">
+    <visual>
+      <origin xyz="0 0 0.02"/>
+      <geometry><box size="0.012 0.008 0.04"/></geometry>
+      <material name="grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.02"/>
+      <geometry><box size="0.012 0.008 0.04"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.03"/>
+      <inertia ixx="2e-5" iyy="2e-5" izz="2e-5" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+</robot>

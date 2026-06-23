@@ -6,6 +6,10 @@ lerobot[feetech]>=0.1.0
 # Xbox / gamepad input (XInput on Windows). Used by src/so101/xbox_teleop.py.
 pygame>=2.5
 
+# 3D practice simulator (src/so101/sim/). Lets you rehearse teleop before hardware.
+# Wheels available for Python 3.10-3.12 on Windows.
+pybullet>=3.2.5
+
 # Config files.
 pyyaml>=6.0
 

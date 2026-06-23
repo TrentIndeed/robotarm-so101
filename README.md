@@ -27,6 +27,23 @@ object and place it somewhere** — and (later) train a policy on them.
 Each successful run is recorded as one **episode** (synced video from both cameras + joint
 states + actions) into a LeRobot dataset for later policy training.
 
+## Practice in simulation first
+
+Before wiring up any motors or cameras, you can rehearse the whole task in a 3D
+simulator driven by the **same** Xbox controller and the **same** control code:
+
+```powershell
+pip install -r requirements.txt
+pip install -e .
+.\scripts\practice.ps1
+```
+
+A PyBullet window opens with the arm on a desk, a red block, and a green target pad.
+Pick up the block and drop it on the pad — each success scores a point and respawns
+the block. Because the sim exposes the identical `get_observation` / `send_action`
+interface as the real arm, your muscle memory (and your `config/teleop.yaml` tuning)
+transfers straight to the hardware.
+
 ## Repo layout
 
 ```
@@ -36,10 +53,12 @@ so101/
 │   ├── cameras.yaml    # gripper + desk camera indices / resolution / fps
 │   └── teleop.yaml     # Xbox axis→joint mapping, speeds, deadzone
 ├── src/so101/
-│   ├── xbox_teleop.py  # read Xbox controller → command follower joints
+│   ├── controller.py   # Xbox controller → normalized joint commands (shared)
+│   ├── xbox_teleop.py  # drive the real follower
 │   ├── cameras.py      # build LeRobot camera configs from cameras.yaml
-│   └── record.py       # record pick-and-place episodes into a dataset
-├── scripts/            # Windows PowerShell helpers (find port, calibrate, run)
+│   ├── record.py       # record pick-and-place episodes into a dataset
+│   └── sim/            # PyBullet practice game (so101.urdf, sim_robot, practice)
+├── scripts/            # Windows PowerShell helpers (practice, calibrate, record)
 ├── data/               # recorded datasets (git-ignored)
 └── docs/SETUP.md       # step-by-step first-time setup
 ```
@@ -71,6 +90,8 @@ python -m so101.cameras --list
 ## Status
 
 - [x] Repo scaffold
+- [x] Practice simulator (PyBullet)
+- [ ] Controller mapping rehearsed in sim
 - [ ] Robot port + calibration confirmed
 - [ ] Cameras configured and previewed
 - [ ] Xbox teleop tuned (speeds / deadzone / mapping)
