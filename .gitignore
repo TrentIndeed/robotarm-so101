@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Recorded datasets / model checkpoints (large, keep out of git)
+# Keep the data/ folder tracked (via .gitkeep) but ignore everything in it.
+data/*
+!data/.gitkeep
+outputs/
+checkpoints/
+*.safetensors
+*.ckpt
+wandb/
+
+# LeRobot local cache (if pointed inside the repo)
+.cache/
+
+# Calibration files contain device-specific values — keep local
+calibration/
+*.json.local
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp

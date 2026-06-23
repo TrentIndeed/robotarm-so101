@@ -1,0 +1,21 @@
+# SO-101 follower arm.
+#
+# Find the serial port with:  python -m lerobot.find_port
+# (Unplug the arm, run it, plug back in, and it tells you which COM port appeared.)
+
+# Windows COM port the Feetech bus shows up as, e.g. COM5.
+port: COM5
+
+# A stable, human-readable id for this arm. LeRobot stores the calibration under
+# this name, so keep it constant once you've calibrated.
+id: so101_follower
+
+# Joints, in order, for the 6-DOF SO-101 follower. These names match LeRobot's
+# motor names and are reused by config/teleop.yaml for the Xbox mapping.
+joints:
+  - shoulder_pan
+  - shoulder_lift
+  - elbow_flex
+  - wrist_flex
+  - wrist_roll
+  - gripper

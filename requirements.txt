@@ -1,0 +1,15 @@
+# Core robotics stack.
+# LeRobot drives the SO-101 follower (Feetech bus) and handles dataset recording.
+# The `feetech` extra pulls in the STS3215 servo driver used by the SO-101.
+lerobot[feetech]>=0.1.0
+
+# Xbox / gamepad input (XInput on Windows). Used by src/so101/xbox_teleop.py.
+pygame>=2.5
+
+# Config files.
+pyyaml>=6.0
+
+# OpenCV is normally installed transitively by lerobot for USB cameras; pin it
+# here too so `python -m so101.cameras --list` works on a bare install.
+opencv-python>=4.9
+numpy>=1.24

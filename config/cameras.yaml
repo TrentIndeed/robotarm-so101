@@ -1,0 +1,22 @@
+# Two USB cameras. List available cameras and their indices with:
+#   python -m so101.cameras --list
+#
+# `index_or_path` is the OpenCV camera index (0, 1, 2, ...) on Windows.
+# If indices shuffle between reboots, you can usually pin a device path instead.
+#
+# Keep both cameras at the same fps as the recording loop in config/teleop.yaml.
+
+cameras:
+  # Wrist/gripper-mounted camera — close-up view for the grasp.
+  gripper:
+    index_or_path: 0
+    width: 640
+    height: 480
+    fps: 30
+
+  # Fixed camera looking at the whole desk / workspace.
+  desk:
+    index_or_path: 1
+    width: 640
+    height: 480
+    fps: 30

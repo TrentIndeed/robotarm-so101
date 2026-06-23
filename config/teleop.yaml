@@ -1,0 +1,51 @@
+# Xbox controller → SO-101 joint mapping and feel.
+#
+# Control model: velocity / incremental. Each control tick, the stick/trigger value
+# (after deadzone) is multiplied by that joint's `speed` and added to the joint's
+# current normalized target. Targets are clipped to the joint's limit. Let go of the
+# stick and the joint holds position. This makes the arm easy to drive smoothly and
+# never "jumps" on startup.
+#
+# Positions are in LeRobot's normalized units after calibration:
+#   most joints: -100 .. +100      gripper: 0 (closed) .. 100 (open)
+
+control_hz: 30        # how often we read the pad and command the arm
+deadzone: 0.12        # ignore stick noise below this magnitude (0..1)
+global_speed: 1.0     # master multiplier on every joint speed (tune live)
+
+# Axis indices come from pygame's joystick API. They CAN differ across controllers /
+# SDL versions, so run `python -m so101.xbox_teleop --debug` to print live axis &
+# button numbers, then adjust these if a stick drives the wrong joint.
+#
+# Typical Xbox (XInput) layout:
+#   axis 0 = left stick X     axis 1 = left stick Y
+#   axis 2 = right stick X    axis 3 = right stick Y
+#   axis 4 = left trigger     axis 5 = right trigger   (rest ≈ -1, pressed ≈ +1)
+
+# `speed` = normalized units/second at full deflection (joint range is 200 units
+# wide, so e.g. speed 60 sweeps the full range in ~3.3 s). Start gentle.
+axes:
+  shoulder_pan:  { axis: 0, speed: 60, invert: false }   # left stick L/R
+  shoulder_lift: { axis: 1, speed: 60, invert: true  }   # left stick U/D
+  wrist_roll:    { axis: 2, speed: 80, invert: false }   # right stick L/R
+  elbow_flex:    { axis: 3, speed: 60, invert: true  }   # right stick U/D
+
+# wrist_flex is driven by the two triggers (one tilts up, the other down).
+wrist_flex:
+  axis_down: 4          # left trigger
+  axis_up: 5            # right trigger
+  speed: 60
+
+# Gripper toggles open/closed on button press (edge-triggered).
+# Xbox button indices (pygame): A=0, B=1, X=2, Y=3, LB=4, RB=5.
+gripper:
+  open_button: 0        # A → open
+  close_button: 1       # B → close
+  open_pos: 100
+  closed_pos: 0
+
+# Optional safety / convenience buttons.
+buttons:
+  emergency_stop: 6     # Back/View — holds all joints, ignores sticks while held
+  episode_done: 7       # Start/Menu — (during recording) save episode, go to next
+  episode_cancel: 2     # X — (during recording) discard & re-record current episode

@@ -1,0 +1,13 @@
+[project]
+name = "so101"
+version = "0.1.0"
+description = "Xbox-teleoperated SO-101 follower arm for pick-and-place data collection with LeRobot"
+requires-python = ">=3.10"
+readme = "README.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
