@@ -39,10 +39,17 @@ pip install -e .
 ```
 
 A MuJoCo window opens with the arm on a desk, a red block, and a green target pad.
-Pick up the block and drop it on the pad — each success scores a point and respawns
-the block. Because the sim exposes the identical `get_observation` / `send_action`
-interface as the real arm, your muscle memory (and your `config/teleop.yaml` tuning)
-transfers straight to the hardware.
+Pick up the block and drop it on the pad — each success scores a point (shown on the
+on-screen HUD) and respawns the block. Because the sim exposes the identical
+`get_observation` / `send_action` interface as the real arm, your muscle memory (and
+your `config/teleop.yaml` tuning) transfers straight to the hardware.
+
+No controller yet? Drive with the keyboard instead:
+
+```powershell
+.\scripts\practice.ps1 -Keyboard
+# A/D W/S I/K J/L T/G move joints, F toggles the gripper, R respawns the block
+```
 
 ## Repo layout
 

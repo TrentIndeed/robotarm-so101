@@ -1,18 +1,23 @@
-"""Pick-and-place practice game for the SO-101, driven by the Xbox controller.
+"""Pick-and-place practice game for the SO-101.
 
-A 3D arm sits on a desk. Use the controller to pick up the block and drop it on the
-green target pad. Each success scores a point and respawns the block somewhere new —
-so you can rehearse the real task before any motors are wired up.
+A 3D arm sits on a desk. Pick up the block and drop it on the green target pad. Each
+success scores a point and respawns the block somewhere new — so you can rehearse the
+real task before any motors are wired up.
 
-    python -m so101.sim.practice
+    python -m so101.sim.practice              # drive with the Xbox controller
+    python -m so101.sim.practice --keyboard   # no controller? drive with the keyboard
     python -m so101.sim.practice --seed 0     # deterministic block positions
 
-Controls are identical to the real teleop (see config/teleop.yaml):
+Xbox controls are identical to the real teleop (see config/teleop.yaml):
     left stick   shoulder pan / lift        right stick   wrist roll / elbow
     triggers     wrist flex down / up       A / B         gripper open / close
-    Back/View    emergency hold             R (keyboard, in viewer)  respawn block
+    Back/View    emergency hold
 
-This uses the SAME XboxTeleopController as the hardware, so muscle memory transfers.
+Keyboard controls (sim only):
+    A/D W/S I/K J/L T/G  move joints        F   gripper toggle
+
+In both modes, press R in the window to respawn the block. The live score and the
+control map are shown as an on-screen HUD.
 """
 
 from __future__ import annotations
@@ -34,6 +39,35 @@ DESK_TOP_Z = 0.0
 BLOCK_HALF = 0.0125          # 2.5 cm cube (matches so101.xml)
 TARGET_XY = (0.2, 0.16)      # matches the target site in so101.xml
 TARGET_RADIUS = 0.05
+
+_FONT = mujoco.mjtFontScale.mjFONTSCALE_150
+_TOPLEFT = mujoco.mjtGridPos.mjGRID_TOPLEFT
+_BOTTOMLEFT = mujoco.mjtGridPos.mjGRID_BOTTOMLEFT
+_TOP = mujoco.mjtGridPos.mjGRID_TOP
+
+# Two-column control legends (left = input, right = what it does).
+_LEGEND = {
+    "xbox": (
+        "L-stick\nR-stick\nTriggers\nA / B\nBack/View\nR",
+        "pan / lift\nroll / elbow\nwrist flex\ngripper\nhold\nrespawn",
+    ),
+    "keyboard": (
+        "A/D  W/S\nI/K  J/L\nT / G\nF\nR",
+        "pan  lift\nelbow  roll\nwrist flex\ngripper\nrespawn",
+    ),
+}
+
+
+def _hud(score: int, mode: str, flash: str):
+    """Build the overlay text: score top-left, controls bottom-left, flash on top."""
+    left, right = _LEGEND[mode]
+    items = [
+        (_FONT, _TOPLEFT, "SO-101 practice\nScore", f"\n{score}"),
+        (_FONT, _BOTTOMLEFT, left, right),
+    ]
+    if flash:
+        items.append((_FONT, _TOP, flash, ""))
+    return items
 
 
 class Block:
@@ -66,26 +100,35 @@ class Block:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="SO-101 Xbox pick-and-place practice sim")
+    parser = argparse.ArgumentParser(description="SO-101 pick-and-place practice sim")
+    parser.add_argument("--keyboard", action="store_true",
+                        help="drive with the keyboard instead of the Xbox controller")
     parser.add_argument("--seed", type=int, default=None, help="fix block spawn positions")
     args = parser.parse_args()
     rng = random.Random(args.seed)
+    mode = "keyboard" if args.keyboard else "xbox"
 
     robot = SimRobot()
     model, data = robot.model, robot.data
     block = Block(model, data)
     block.respawn(rng)
 
-    ctrl = XboxTeleopController()
+    if args.keyboard:
+        from .keyboard_control import KeyboardController
+        ctrl = KeyboardController()
+    else:
+        ctrl = XboxTeleopController()
     ctrl.connect()
     ctrl.seed_targets(robot.get_observation())
 
-    # Viewer key handling: 'R' (keycode 82) requests a respawn on the main loop.
+    # Viewer key handling: 'R' respawns; everything else goes to a keyboard controller.
     respawn_req = [False]
 
     def on_key(keycode):
         if keycode in (ord("R"), ord("r")):
             respawn_req[0] = True
+        elif hasattr(ctrl, "on_key"):
+            ctrl.on_key(keycode)
 
     score = 0
     cooldown = 0
@@ -109,14 +152,17 @@ def main() -> None:
                     respawn_req[0] = False
                     block.respawn(rng)
 
+                flash = ""
                 if cooldown > 0:
                     cooldown -= 1
+                    flash = "Nice!  +1"
                 elif block.on_target():
                     score += 1
                     cooldown = int(2 * ctrl.cfg["control_hz"])  # ~2 s lockout
                     print(f"Nice! Score: {score}")
                     block.respawn(rng)
 
+                viewer.set_texts(_hud(score, mode, flash))
                 viewer.sync()
                 time.sleep(max(0.0, dt - (time.perf_counter() - t0)))
     except KeyboardInterrupt:

@@ -45,15 +45,20 @@ If PowerShell blocks the activate script:
 
 ## 1b. Practice in the simulator (do this first!)
 
-No hardware needed — just the Xbox controller:
+No hardware needed:
 
 ```powershell
-.\scripts\practice.ps1
+.\scripts\practice.ps1              # with the Xbox controller
+.\scripts\practice.ps1 -Keyboard    # no controller yet — drive with the keyboard
 ```
 
-A 3D (MuJoCo) arm appears on a desk with a red block and a green target pad. Drive the
-arm, pick up the block, and drop it on the pad to score. This runs the *same* controller
-code as the real arm, so it's the ideal place to:
+A 3D (MuJoCo) arm appears on a desk with a red block and a green target pad, with a
+live HUD showing your score and the control map. Drive the arm, pick up the block, and
+drop it on the pad to score. Keyboard mode (sim only) maps `A/D W/S I/K J/L T/G` to the
+joints and `F` to the gripper; `R` respawns the block in either mode.
+
+With the Xbox controller it runs the *same* code as the real arm, so it's the ideal
+place to:
 
 - learn the stick/trigger/button layout,
 - confirm your controller's axis numbers (if a stick feels wrong, run
