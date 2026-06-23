@@ -38,7 +38,7 @@ pip install -e .
 .\scripts\practice.ps1
 ```
 
-A PyBullet window opens with the arm on a desk, a red block, and a green target pad.
+A MuJoCo window opens with the arm on a desk, a red block, and a green target pad.
 Pick up the block and drop it on the pad — each success scores a point and respawns
 the block. Because the sim exposes the identical `get_observation` / `send_action`
 interface as the real arm, your muscle memory (and your `config/teleop.yaml` tuning)
@@ -57,7 +57,7 @@ so101/
 │   ├── xbox_teleop.py  # drive the real follower
 │   ├── cameras.py      # build LeRobot camera configs from cameras.yaml
 │   ├── record.py       # record pick-and-place episodes into a dataset
-│   └── sim/            # PyBullet practice game (so101.urdf, sim_robot, practice)
+│   └── sim/            # MuJoCo practice game (so101.xml, sim_robot, practice)
 ├── scripts/            # Windows PowerShell helpers (practice, calibrate, record)
 ├── data/               # recorded datasets (git-ignored)
 └── docs/SETUP.md       # step-by-step first-time setup
@@ -68,9 +68,9 @@ so101/
 See [docs/SETUP.md](docs/SETUP.md) for the full walkthrough. The short version:
 
 ```powershell
-# 1. Create the environment and install deps
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
+# 1. Create the environment and install deps (Python 3.12 recommended)
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1           # Git Bash: source .venv/Scripts/activate
 pip install -r requirements.txt
 
 # 2. Find the arm's serial port, then calibrate it (one time)

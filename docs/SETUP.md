@@ -12,16 +12,36 @@ Step-by-step for getting the Xbox-teleoperated SO-101 follower recording episode
 
 ## 1. Environment
 
+Use **Python 3.12** (`py -3.12`). Newer 3.13 works for the sim too, but 3.12 is the
+safest across all the deps. Pick the shell you're actually using:
+
 ```powershell
+# PowerShell
 cd C:\Users\Trenton\CodeProjects\so101
-py -m venv .venv
+py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 pip install -e .          # makes `python -m so101.*` importable
 ```
 
+```bash
+# Git Bash (note: different activate path — NOT the .ps1)
+cd /c/Users/Trenton/CodeProjects/so101
+py -3.12 -m venv .venv
+source .venv/Scripts/activate
+pip install -r requirements.txt
+pip install -e .
+```
+
 If PowerShell blocks the activate script:
 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+
+> A correctly activated venv shows `(.venv)` at the start of your prompt. If pip ever
+> says *"Defaulting to user installation"*, the venv is **not** active — fix that first.
+>
+> Just want the practice sim? It only needs `mujoco`, `pygame`, and `pyyaml` — the full
+> `requirements.txt` (which pulls in LeRobot + PyTorch) is only needed for the hardware
+> recording steps.
 
 ## 1b. Practice in the simulator (do this first!)
 
@@ -31,8 +51,8 @@ No hardware needed — just the Xbox controller:
 .\scripts\practice.ps1
 ```
 
-A 3D arm appears on a desk with a red block and a green target pad. Drive the arm,
-pick up the block, and drop it on the pad to score. This runs the *same* controller
+A 3D (MuJoCo) arm appears on a desk with a red block and a green target pad. Drive the
+arm, pick up the block, and drop it on the pad to score. This runs the *same* controller
 code as the real arm, so it's the ideal place to:
 
 - learn the stick/trigger/button layout,

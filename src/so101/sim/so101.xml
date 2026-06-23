@@ -1,0 +1,97 @@
+<!-- Simplified 6-DOF SO-101 follower for practice in MuJoCo.
+     Joint NAMES match the real robot (shoulder_pan, shoulder_lift, elbow_flex,
+     wrist_flex, wrist_roll) plus a two-finger gripper, so the same Xbox mapping
+     drives both sim and hardware. Geometry is approximate — this is for learning
+     to teleoperate, not a kinematically exact twin. Units: meters / radians.
+     Note: MuJoCo box "size" is HALF-extents. -->
+<mujoco model="so101_sim">
+  <compiler angle="radian" autolimits="true"/>
+  <option gravity="0 0 -9.81" timestep="0.002" integrator="implicitfast"/>
+
+  <visual>
+    <global azimuth="50" elevation="-30"/>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.4 0.4 0.4"/>
+  </visual>
+
+  <default>
+    <joint damping="0.6"/>
+    <geom friction="1 0.05 0.001"/>
+    <!-- default position actuator gains; overridden per-actuator below -->
+    <position kp="15" forcerange="-12 12"/>
+  </default>
+
+  <asset>
+    <material name="grey"  rgba="0.35 0.35 0.38 1"/>
+    <material name="blue"  rgba="0.15 0.45 0.85 1"/>
+    <material name="dark"  rgba="0.15 0.15 0.18 1"/>
+    <material name="desk"  rgba="0.55 0.38 0.24 1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0.2 0 1.0" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+
+    <!-- Desk: static box whose top surface is at z = 0 (arm base mounts here). -->
+    <geom name="desk" type="box" size="0.4 0.32 0.2" pos="0.1 0 -0.2" material="desk"/>
+
+    <!-- Target pad: visual-only site (no collision). -->
+    <site name="target" type="box" size="0.05 0.05 0.002" pos="0.2 0.16 0.002"
+          rgba="0.1 0.8 0.2 0.55"/>
+
+    <!-- Arm (fixed base). -->
+    <body name="base_link" pos="0 0 0">
+      <geom type="cylinder" size="0.045 0.03" pos="0 0 0.03" material="dark"/>
+
+      <body name="shoulder_link" pos="0 0 0.06">
+        <joint name="shoulder_pan" type="hinge" axis="0 0 1" range="-1.92 1.92"/>
+        <geom type="box" size="0.03 0.03 0.02" pos="0 0 0.02" material="grey"/>
+
+        <body name="upper_arm" pos="0 0 0.04">
+          <joint name="shoulder_lift" type="hinge" axis="0 1 0" range="-1.92 1.92"/>
+          <geom type="box" size="0.02 0.02 0.06" pos="0 0 0.06" material="blue"/>
+
+          <body name="forearm" pos="0 0 0.12">
+            <joint name="elbow_flex" type="hinge" axis="0 1 0" range="-1.92 1.92"/>
+            <geom type="box" size="0.0175 0.0175 0.06" pos="0 0 0.06" material="blue"/>
+
+            <body name="wrist_link" pos="0 0 0.12">
+              <joint name="wrist_flex" type="hinge" axis="0 1 0" range="-1.92 1.92"/>
+              <geom type="box" size="0.02 0.02 0.02" pos="0 0 0.02" material="grey"/>
+
+              <body name="gripper_base" pos="0 0 0.04">
+                <joint name="wrist_roll" type="hinge" axis="0 0 1" range="-2.6 2.6"/>
+                <geom type="box" size="0.025 0.015 0.015" pos="0 0 0.015" material="dark"/>
+
+                <!-- Fingers: slide joints, opposite axes. ctrl 0 = closed, max = open. -->
+                <body name="left_finger" pos="0 0.006 0.03">
+                  <joint name="left_finger" type="slide" axis="0 1 0" range="0 0.024"/>
+                  <geom type="box" size="0.006 0.004 0.02" pos="0 0 0.02" material="grey"/>
+                </body>
+                <body name="right_finger" pos="0 -0.006 0.03">
+                  <joint name="right_finger" type="slide" axis="0 -1 0" range="0 0.024"/>
+                  <geom type="box" size="0.006 0.004 0.02" pos="0 0 0.02" material="grey"/>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+
+    <!-- Block to pick up: free body resting on the desk top. -->
+    <body name="block" pos="0.2 -0.08 0.0125">
+      <freejoint name="block_free"/>
+      <geom name="block" type="box" size="0.0125 0.0125 0.0125" rgba="0.9 0.2 0.2 1"
+            mass="0.04" friction="1.2 0.05 0.001"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="shoulder_pan"  joint="shoulder_pan"  kp="18" ctrlrange="-1.92 1.92"/>
+    <position name="shoulder_lift" joint="shoulder_lift" kp="20" ctrlrange="-1.92 1.92"/>
+    <position name="elbow_flex"    joint="elbow_flex"    kp="16" ctrlrange="-1.92 1.92"/>
+    <position name="wrist_flex"    joint="wrist_flex"    kp="12" ctrlrange="-1.92 1.92"/>
+    <position name="wrist_roll"    joint="wrist_roll"    kp="8"  ctrlrange="-2.6 2.6"/>
+    <position name="left_finger"   joint="left_finger"   kp="80" forcerange="-30 30" ctrlrange="0 0.024"/>
+    <position name="right_finger"  joint="right_finger"  kp="80" forcerange="-30 30" ctrlrange="0 0.024"/>
+  </actuator>
+</mujoco>

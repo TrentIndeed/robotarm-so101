@@ -7,8 +7,8 @@ lerobot[feetech]>=0.1.0
 pygame>=2.5
 
 # 3D practice simulator (src/so101/sim/). Lets you rehearse teleop before hardware.
-# Wheels available for Python 3.10-3.12 on Windows.
-pybullet>=3.2.5
+# MuJoCo ships prebuilt wheels (no C++ compiler needed) and includes a 3D viewer.
+mujoco>=3.1
 
 # Config files.
 pyyaml>=6.0

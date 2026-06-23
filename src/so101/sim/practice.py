@@ -10,7 +10,7 @@ so you can rehearse the real task before any motors are wired up.
 Controls are identical to the real teleop (see config/teleop.yaml):
     left stick   shoulder pan / lift        right stick   wrist roll / elbow
     triggers     wrist flex down / up       A / B         gripper open / close
-    Back/View    emergency hold             R (keyboard)  respawn block
+    Back/View    emergency hold             R (keyboard, in viewer)  respawn block
 
 This uses the SAME XboxTeleopController as the hardware, so muscle memory transfers.
 """
@@ -21,8 +21,8 @@ import argparse
 import random
 import time
 
-import pybullet as p
-import pybullet_data
+import mujoco
+import mujoco.viewer
 
 from ..controller import XboxTeleopController
 from .sim_robot import SimRobot
@@ -31,59 +31,38 @@ from .sim_robot import SimRobot
 SPAWN_X = (0.14, 0.24)
 SPAWN_Y = (-0.16, 0.16)
 DESK_TOP_Z = 0.0
-BLOCK_HALF = 0.0125          # 2.5 cm cube
-TARGET_XY = (0.20, 0.16)     # where to place the block
+BLOCK_HALF = 0.0125          # 2.5 cm cube (matches so101.xml)
+TARGET_XY = (0.2, 0.16)      # matches the target site in so101.xml
 TARGET_RADIUS = 0.05
 
 
-def _build_scene():
-    """Floor, desk slab, target pad. Returns the target pad body id."""
-    p.setAdditionalSearchPath(pybullet_data.getDataPath())
-    p.loadURDF("plane.urdf", basePosition=[0, 0, -0.4])
+class Block:
+    """Helper around the free-floating block body in the model."""
 
-    # Desk slab: top surface sits at z = 0 (the arm base mounts here).
-    desk_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.4, 0.32, 0.2])
-    desk_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.4, 0.32, 0.2],
-                                   rgbaColor=[0.55, 0.38, 0.24, 1])
-    p.createMultiBody(0, desk_col, desk_vis, basePosition=[0.1, 0, -0.2])
+    def __init__(self, model, data):
+        self.model, self.data = model, data
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "block_free")
+        self.qadr = model.jnt_qposadr[jid]   # 7 values: xyz + quat
+        self.vadr = model.jnt_dofadr[jid]    # 6 values: lin + ang vel
+        self.bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "block")
 
-    # Target pad: flat translucent green marker, visual only (no collision).
-    pad_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[TARGET_RADIUS, TARGET_RADIUS, 0.002],
-                                  rgbaColor=[0.1, 0.8, 0.2, 0.55])
-    pad = p.createMultiBody(0, -1, pad_vis,
-                            basePosition=[TARGET_XY[0], TARGET_XY[1], DESK_TOP_Z + 0.002])
-    return pad
+    def respawn(self, rng: random.Random) -> None:
+        for _ in range(20):
+            x = rng.uniform(*SPAWN_X)
+            y = rng.uniform(*SPAWN_Y)
+            if (x - TARGET_XY[0]) ** 2 + (y - TARGET_XY[1]) ** 2 > (2 * TARGET_RADIUS) ** 2:
+                break
+        self.data.qpos[self.qadr:self.qadr + 7] = [x, y, DESK_TOP_Z + BLOCK_HALF, 1, 0, 0, 0]
+        self.data.qvel[self.vadr:self.vadr + 6] = 0
+        mujoco.mj_forward(self.model, self.data)
 
-
-def _spawn_block(rng: random.Random, existing=None):
-    """Create (or move) the pick-up block to a random spot, away from the target."""
-    for _ in range(20):
-        x = rng.uniform(*SPAWN_X)
-        y = rng.uniform(*SPAWN_Y)
-        if (x - TARGET_XY[0]) ** 2 + (y - TARGET_XY[1]) ** 2 > (2 * TARGET_RADIUS) ** 2:
-            break
-    z = DESK_TOP_Z + BLOCK_HALF
-    if existing is not None:
-        p.resetBasePositionAndOrientation(existing, [x, y, z], [0, 0, 0, 1])
-        p.resetBaseVelocity(existing, [0, 0, 0], [0, 0, 0])
-        return existing
-
-    col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[BLOCK_HALF] * 3)
-    vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[BLOCK_HALF] * 3,
-                              rgbaColor=[0.9, 0.2, 0.2, 1])
-    block = p.createMultiBody(0.04, col, vis, basePosition=[x, y, z])
-    p.changeDynamics(block, -1, lateralFriction=1.2)
-    return block
-
-
-def _on_target(block) -> bool:
-    """True when the block is resting inside the target pad."""
-    (bx, by, bz), _ = p.getBasePositionAndOrientation(block)
-    lin, _ = p.getBaseVelocity(block)
-    speed = (lin[0] ** 2 + lin[1] ** 2 + lin[2] ** 2) ** 0.5
-    in_circle = (bx - TARGET_XY[0]) ** 2 + (by - TARGET_XY[1]) ** 2 < TARGET_RADIUS ** 2
-    resting = bz < DESK_TOP_Z + BLOCK_HALF + 0.01 and speed < 0.03
-    return in_circle and resting
+    def on_target(self) -> bool:
+        bx, by, bz = self.data.xpos[self.bid]
+        vx, vy, vz = self.data.qvel[self.vadr:self.vadr + 3]
+        speed = (vx * vx + vy * vy + vz * vz) ** 0.5
+        in_circle = (bx - TARGET_XY[0]) ** 2 + (by - TARGET_XY[1]) ** 2 < TARGET_RADIUS ** 2
+        resting = bz < DESK_TOP_Z + BLOCK_HALF + 0.01 and speed < 0.03
+        return in_circle and resting
 
 
 def main() -> None:
@@ -92,67 +71,59 @@ def main() -> None:
     args = parser.parse_args()
     rng = random.Random(args.seed)
 
-    p.connect(p.GUI)
-    p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)  # hide PyBullet's side panels
-    p.setGravity(0, 0, -9.81)
-    p.resetDebugVisualizerCamera(cameraDistance=0.75, cameraYaw=55,
-                                 cameraPitch=-35, cameraTargetPosition=[0.12, 0.04, 0.05])
-
-    _build_scene()
-    robot = SimRobot(base_position=(0, 0, 0))
-    block = _spawn_block(rng)
+    robot = SimRobot()
+    model, data = robot.model, robot.data
+    block = Block(model, data)
+    block.respawn(rng)
 
     ctrl = XboxTeleopController()
     ctrl.connect()
     ctrl.seed_targets(robot.get_observation())
 
-    hud = p.addUserDebugText("", [0.0, -0.28, 0.18], textColorRGB=[1, 1, 1], textSize=1.4)
+    # Viewer key handling: 'R' (keycode 82) requests a respawn on the main loop.
+    respawn_req = [False]
+
+    def on_key(keycode):
+        if keycode in (ord("R"), ord("r")):
+            respawn_req[0] = True
+
     score = 0
     cooldown = 0
     dt = ctrl.dt
-    # PyBullet's default internal timestep is 1/240 s; step enough to advance one
-    # control tick (dt) of simulated time per loop.
-    substeps = max(1, round(240 * dt))
+    n_steps = max(1, round(dt / model.opt.timestep))
 
-    print("Practice sim running. Place the red block on the green pad. Close window or Ctrl+C to quit.")
+    print("Practice sim running. Place the red block on the green pad.")
+    print("Close the viewer window or press Ctrl+C to quit.\n")
+
     try:
-        while True:
-            t0 = time.perf_counter()
+        with mujoco.viewer.launch_passive(model, data, key_callback=on_key) as viewer:
+            while viewer.is_running():
+                t0 = time.perf_counter()
 
-            action = ctrl.compute_action()
-            robot.send_action(action)
-            for _ in range(substeps):
-                p.stepSimulation()
+                action = ctrl.compute_action()
+                robot.send_action(action)
+                for _ in range(n_steps):
+                    mujoco.mj_step(model, data)
 
-            # Keyboard R = manual respawn.
-            keys = p.getKeyboardEvents()
-            if ord("r") in keys and keys[ord("r")] & p.KEY_WAS_TRIGGERED:
-                block = _spawn_block(rng, block)
+                if respawn_req[0]:
+                    respawn_req[0] = False
+                    block.respawn(rng)
 
-            # Scoring with a short cooldown so one placement counts once.
-            if cooldown > 0:
-                cooldown -= 1
-            elif _on_target(block):
-                score += 1
-                cooldown = int(2 * ctrl.cfg["control_hz"])  # ~2 s
-                print(f"Nice! Score: {score}")
-                block = _spawn_block(rng, block)
+                if cooldown > 0:
+                    cooldown -= 1
+                elif block.on_target():
+                    score += 1
+                    cooldown = int(2 * ctrl.cfg["control_hz"])  # ~2 s lockout
+                    print(f"Nice! Score: {score}")
+                    block.respawn(rng)
 
-            hud = p.addUserDebugText(
-                f"Score: {score}    [R] respawn   place red block on green pad",
-                [0.0, -0.28, 0.18], textColorRGB=[1, 1, 1], textSize=1.4,
-                replaceItemUniqueId=hud,
-            )
-
-            time.sleep(max(0.0, dt - (time.perf_counter() - t0)))
-    except (KeyboardInterrupt, p.error):
-        print(f"\nDone. Final score: {score}")
+                viewer.sync()
+                time.sleep(max(0.0, dt - (time.perf_counter() - t0)))
+    except KeyboardInterrupt:
+        pass
     finally:
         ctrl.disconnect()
-        try:
-            p.disconnect()
-        except p.error:
-            pass
+        print(f"\nDone. Final score: {score}")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""PyBullet practice simulation for the SO-101 follower.
+"""MuJoCo practice simulation for the SO-101 follower.
 
 Lets you rehearse Xbox-controller teleoperation before any hardware exists. The
 sim presents the SAME observation/action interface as the real LeRobot arm
