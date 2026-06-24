@@ -29,22 +29,20 @@ states + actions) into a LeRobot dataset for later policy training.
 
 ## One app, every mode
 
-Everything is reachable from a single interactive menu — no flags to remember:
+Everything is reachable from a single **graphical launcher** — buttons and dropdowns,
+no flags or terminal questions:
 
-```powershell
-.\scripts\so101.ps1        # or:  python -m so101
+```bash
+python -m so101            # opens the GUI window
+# or:  ./scripts/so101.sh  (Git Bash)   /   .\scripts\so101.ps1  (PowerShell)
 ```
 
-```
-  1) Practice in the simulator        5) Train a policy
-  2) Record episodes (sim or real)    6) Cameras: list / preview
-  3) Teleoperate the real arm         7) Calibrate the arm
-  4) Run a trained policy (sim/real)  8) Find the arm's serial port
-```
-
-Each mode prompts for its options (backend, episode count, …) with sensible defaults.
-The individual `python -m so101.*` commands and `scripts/*.ps1` helpers still exist for
-scripting; the app just front-ends them.
+A window opens with a section per mode — Practice, Record, Run policy, Train, Real arm
+(teleop / calibrate / find-port), Cameras — each with its own options (backend
+sim/real, input device, episode count, checkpoint picker, …). Click Launch and that
+mode opens in its own window. Prefer a text menu instead? `python -m so101.app`. The
+individual `python -m so101.*` commands and `scripts/*` helpers still exist for
+scripting; the launcher just front-ends them.
 
 ## Practice in simulation first
 

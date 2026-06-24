@@ -1,0 +1,243 @@
+"""Graphical launcher for the SO-101 project (no terminal questions).
+
+A Tkinter window with a button per mode and inline dropdowns / fields for each
+mode's options. Clicking a Launch button spawns that mode in its own window
+(MuJoCo viewer, camera previews) plus a console for its logs — the launcher stays
+open so you can start another mode.
+
+    python -m so101            # opens this GUI
+
+Tkinter ships with the standard python.org build, so no extra dependencies.
+The text-menu version is still available as ``python -m so101.app``.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import tkinter as tk
+from pathlib import Path
+from tkinter import filedialog, ttk
+
+from . import REPO_ROOT, load_config
+
+# Kept local so the GUI starts instantly (importing record would pull in mujoco).
+DEFAULT_TASK = "Pick up the small object and place it at the target."
+
+PAD = {"padx": 8, "pady": 4}
+
+
+def _console_kwargs() -> dict:
+    # Give each launched mode its own console for logs / interactive prompts.
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_CONSOLE}
+    return {}
+
+
+class Launcher:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        root.title("SO-101 launcher")
+        root.minsize(560, 0)
+
+        ttk.Label(root, text="SO-101  ::  Xbox-teleoperated pick & place",
+                  font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=12, pady=(12, 2))
+        ttk.Label(root, text="Pick a mode and click Launch. Each opens in its own window.",
+                  foreground="#555").pack(anchor="w", padx=12, pady=(0, 8))
+
+        self._practice_section()
+        self._record_section()
+        self._policy_section()
+        self._train_section()
+        self._hardware_section()
+        self._camera_section()
+
+        self.status = tk.StringVar(value="Ready.")
+        ttk.Separator(root, orient="horizontal").pack(fill="x", pady=(8, 0))
+        ttk.Label(root, textvariable=self.status, foreground="#0a6").pack(anchor="w", padx=12, pady=8)
+
+    # -- launching -----------------------------------------------------------
+    def _launch_module(self, module: str, args: list[str], label: str) -> None:
+        subprocess.Popen([sys.executable, "-m", module, *args], **_console_kwargs())
+        self.status.set(f"Launched: {label}.  A new window opened.")
+
+    def _launch_exe(self, name: str, args: list[str], label: str) -> None:
+        exe = Path(sys.executable).parent / (f"{name}.exe" if os.name == "nt" else name)
+        prog = str(exe) if exe.exists() else name
+        subprocess.Popen([prog, *args], **_console_kwargs())
+        self.status.set(f"Launched: {label}.  A new console opened.")
+
+    # -- sections ------------------------------------------------------------
+    def _group(self, title: str) -> ttk.LabelFrame:
+        f = ttk.LabelFrame(self.root, text=title)
+        f.pack(fill="x", padx=12, pady=5)
+        return f
+
+    def _practice_section(self) -> None:
+        f = self._group("Practice in the simulator")
+        self.practice_input = tk.StringVar(value="xbox")
+        ttk.Label(f, text="Input:").grid(row=0, column=0, sticky="w", **PAD)
+        ttk.Radiobutton(f, text="Xbox controller", variable=self.practice_input,
+                        value="xbox").grid(row=0, column=1, sticky="w", **PAD)
+        ttk.Radiobutton(f, text="Keyboard", variable=self.practice_input,
+                        value="keyboard").grid(row=0, column=2, sticky="w", **PAD)
+        ttk.Button(f, text="Launch practice", command=self._do_practice).grid(
+            row=0, column=3, sticky="e", **PAD)
+
+    def _do_practice(self) -> None:
+        args = ["--keyboard"] if self.practice_input.get() == "keyboard" else []
+        self._launch_module("so101.sim.practice", args, "practice sim")
+
+    def _record_section(self) -> None:
+        f = self._group("Record episodes")
+        self.rec_backend = tk.StringVar(value="sim")
+        self.rec_eps = tk.StringVar(value="10")
+        self.rec_repo = tk.StringVar(value="local/so101_pick_place_sim")
+        self.rec_task = tk.StringVar(value=DEFAULT_TASK)
+
+        ttk.Label(f, text="Backend:").grid(row=0, column=0, sticky="w", **PAD)
+        ttk.Radiobutton(f, text="Sim", variable=self.rec_backend, value="sim",
+                        command=self._sync_rec_repo).grid(row=0, column=1, sticky="w", **PAD)
+        ttk.Radiobutton(f, text="Real arm", variable=self.rec_backend, value="real",
+                        command=self._sync_rec_repo).grid(row=0, column=2, sticky="w", **PAD)
+        ttk.Label(f, text="Episodes:").grid(row=0, column=3, sticky="e", **PAD)
+        ttk.Spinbox(f, from_=1, to=999, width=5, textvariable=self.rec_eps).grid(
+            row=0, column=4, sticky="w", **PAD)
+
+        ttk.Label(f, text="Dataset id:").grid(row=1, column=0, sticky="w", **PAD)
+        ttk.Entry(f, textvariable=self.rec_repo, width=34).grid(
+            row=1, column=1, columnspan=3, sticky="we", **PAD)
+        ttk.Label(f, text="Task:").grid(row=2, column=0, sticky="w", **PAD)
+        ttk.Entry(f, textvariable=self.rec_task, width=44).grid(
+            row=2, column=1, columnspan=4, sticky="we", **PAD)
+        ttk.Button(f, text="Launch record", command=self._do_record).grid(
+            row=0, column=5, sticky="e", **PAD)
+
+    def _sync_rec_repo(self) -> None:
+        # Swap the default dataset id to match the backend (only if unchanged).
+        known = {"local/so101_pick_place_sim", "local/so101_pick_place"}
+        if self.rec_repo.get() in known:
+            self.rec_repo.set("local/so101_pick_place_sim" if self.rec_backend.get() == "sim"
+                              else "local/so101_pick_place")
+
+    def _do_record(self) -> None:
+        args = ["--num-episodes", self.rec_eps.get(), "--repo-id", self.rec_repo.get(),
+                "--task", self.rec_task.get()]
+        if self.rec_backend.get() == "sim":
+            args.append("--sim")
+        self._launch_module("so101.record", args, "record")
+
+    def _policy_section(self) -> None:
+        f = self._group("Run a trained policy")
+        self.pol_backend = tk.StringVar(value="sim")
+        self.pol_ckpt = tk.StringVar(value="")
+        self.pol_ds = tk.StringVar(value="local/so101_pick_place_sim")
+
+        ttk.Label(f, text="Backend:").grid(row=0, column=0, sticky="w", **PAD)
+        ttk.Radiobutton(f, text="Sim", variable=self.pol_backend, value="sim").grid(
+            row=0, column=1, sticky="w", **PAD)
+        ttk.Radiobutton(f, text="Real arm", variable=self.pol_backend, value="real").grid(
+            row=0, column=2, sticky="w", **PAD)
+
+        ttk.Label(f, text="Checkpoint:").grid(row=1, column=0, sticky="w", **PAD)
+        ttk.Entry(f, textvariable=self.pol_ckpt, width=34).grid(
+            row=1, column=1, columnspan=2, sticky="we", **PAD)
+        ttk.Button(f, text="Browse…", command=self._browse_ckpt).grid(row=1, column=3, **PAD)
+
+        ttk.Label(f, text="Dataset id:").grid(row=2, column=0, sticky="w", **PAD)
+        ttk.Entry(f, textvariable=self.pol_ds, width=34).grid(
+            row=2, column=1, columnspan=2, sticky="we", **PAD)
+        ttk.Button(f, text="Launch policy", command=self._do_policy).grid(
+            row=0, column=3, sticky="e", **PAD)
+
+    def _browse_ckpt(self) -> None:
+        d = filedialog.askdirectory(title="Select the pretrained_model directory",
+                                    initialdir=str(REPO_ROOT / "outputs"))
+        if d:
+            self.pol_ckpt.set(d)
+
+    def _do_policy(self) -> None:
+        if not self.pol_ckpt.get():
+            self.status.set("Pick a trained checkpoint first (Browse…).")
+            return
+        args = ["--checkpoint", self.pol_ckpt.get(), "--dataset", self.pol_ds.get()]
+        if self.pol_backend.get() == "sim":
+            args.append("--sim")
+        self._launch_module("so101.run_policy", args, "run policy")
+
+    def _train_section(self) -> None:
+        f = self._group("Train a policy")
+        self.tr_repo = tk.StringVar(value="local/so101_pick_place_sim")
+        self.tr_policy = tk.StringVar(value="act")
+        self.tr_steps = tk.StringVar(value="20000")
+        self.tr_device = tk.StringVar(value="cpu")
+
+        ttk.Label(f, text="Dataset id:").grid(row=0, column=0, sticky="w", **PAD)
+        ttk.Entry(f, textvariable=self.tr_repo, width=28).grid(row=0, column=1, sticky="we", **PAD)
+        ttk.Label(f, text="Policy:").grid(row=0, column=2, sticky="e", **PAD)
+        ttk.Combobox(f, textvariable=self.tr_policy, width=8,
+                     values=["act", "diffusion", "smolvla"]).grid(row=0, column=3, **PAD)
+        ttk.Label(f, text="Steps:").grid(row=1, column=0, sticky="w", **PAD)
+        ttk.Entry(f, textvariable=self.tr_steps, width=10).grid(row=1, column=1, sticky="w", **PAD)
+        ttk.Label(f, text="Device:").grid(row=1, column=2, sticky="e", **PAD)
+        ttk.Combobox(f, textvariable=self.tr_device, width=8,
+                     values=["cpu", "cuda"]).grid(row=1, column=3, **PAD)
+        ttk.Button(f, text="Launch training", command=self._do_train).grid(
+            row=0, column=4, rowspan=2, sticky="e", **PAD)
+
+    def _do_train(self) -> None:
+        repo = self.tr_repo.get()
+        root = REPO_ROOT / "data" / repo.replace("/", "__")
+        out = REPO_ROOT / "outputs" / "train" / self.tr_policy.get()
+        self._launch_exe("lerobot-train", [
+            f"--dataset.repo_id={repo}", f"--dataset.root={root}",
+            f"--policy.type={self.tr_policy.get()}", f"--policy.device={self.tr_device.get()}",
+            f"--output_dir={out}", f"--steps={self.tr_steps.get()}",
+        ], "training")
+
+    def _hardware_section(self) -> None:
+        f = self._group("Real arm")
+        self.teleop_cams = tk.BooleanVar(value=False)
+        ttk.Button(f, text="Teleoperate", command=self._do_teleop).grid(row=0, column=0, **PAD)
+        ttk.Checkbutton(f, text="with cameras", variable=self.teleop_cams).grid(
+            row=0, column=1, sticky="w", **PAD)
+        ttk.Button(f, text="Controller debug",
+                   command=lambda: self._launch_module("so101.xbox_teleop", ["--debug"], "controller debug")
+                   ).grid(row=0, column=2, **PAD)
+        ttk.Button(f, text="Calibrate", command=self._do_calibrate).grid(row=0, column=3, **PAD)
+        ttk.Button(f, text="Find port",
+                   command=lambda: self._launch_exe("lerobot-find-port", [], "find port")
+                   ).grid(row=0, column=4, **PAD)
+
+    def _do_teleop(self) -> None:
+        args = [] if self.teleop_cams.get() else ["--no-cameras"]
+        self._launch_module("so101.xbox_teleop", args, "teleop")
+
+    def _do_calibrate(self) -> None:
+        cfg = load_config("robot")
+        self._launch_exe("lerobot-calibrate", [
+            "--robot.type=so101_follower", f"--robot.port={cfg['port']}", f"--robot.id={cfg['id']}",
+        ], "calibration")
+
+    def _camera_section(self) -> None:
+        f = self._group("Cameras")
+        ttk.Button(f, text="List indices",
+                   command=lambda: self._launch_module("so101.cameras", ["--list"], "camera list")
+                   ).grid(row=0, column=0, **PAD)
+        ttk.Button(f, text="Preview gripper",
+                   command=lambda: self._launch_module("so101.cameras", ["--preview", "gripper"], "gripper preview")
+                   ).grid(row=0, column=1, **PAD)
+        ttk.Button(f, text="Preview desk",
+                   command=lambda: self._launch_module("so101.cameras", ["--preview", "desk"], "desk preview")
+                   ).grid(row=0, column=2, **PAD)
+
+
+def main() -> None:
+    root = tk.Tk()
+    Launcher(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
