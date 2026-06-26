@@ -73,35 +73,65 @@ def teleop_loop(with_cameras: bool = False) -> None:
         robot.disconnect()
 
 
+def _camera_panel(obs: dict, cam_names: list):
+    """Stack the camera frames (RGB->BGR, labeled) into one image for cv2.imshow."""
+    import cv2
+
+    tiles = []
+    for cam in cam_names:
+        img = obs.get(cam)
+        if img is None:
+            continue
+        bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        bgr = cv2.resize(bgr, (480, 360))
+        cv2.putText(bgr, cam, (8, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        tiles.append(bgr)
+    return cv2.vconcat(tiles) if tiles else None
+
+
 def mirror_loop() -> None:
-    """Drive the real arm while a MuJoCo 3D window mirrors its live measured pose."""
+    """Drive the real arm with a 3D MuJoCo twin and the live camera feeds beside it."""
+    import cv2
     import mujoco.viewer
 
     from .robot import make_robot
     from .sim.sim_robot import SimRobot
 
-    real = make_robot(sim=False, use_cameras=False)
+    real = make_robot(sim=False, use_cameras=True)
     sim = SimRobot(use_cameras=False)
     ctrl = XboxTeleopController()
+    cam_names = [k for k, v in real.observation_features.items() if isinstance(v, tuple)]
 
     real.connect()
     ctrl.connect()
     ctrl.seed_targets(real.get_observation())
-    print("Driving the REAL arm; the 3D window mirrors it. Back/View = hold, "
+    print("Driving the REAL arm; 3D twin + camera feeds shown. Back/View = hold, "
           "Ctrl+C or close the window to stop.")
     dt = ctrl.dt
+    win, placed = "so101 cameras", False
     try:
         with mujoco.viewer.launch_passive(sim.model, sim.data) as viewer:
             while viewer.is_running():
                 t0 = time.perf_counter()
                 action = ctrl.compute_action()
                 real.send_action(action)
-                sim.set_pose(real.get_observation())   # mirror measured pose
+                obs = real.get_observation()
+                sim.set_pose(obs)                      # mirror measured pose
+
+                panel = _camera_panel(obs, cam_names)
+                if panel is not None:
+                    cv2.imshow(win, panel)
+                    if not placed:
+                        cv2.moveWindow(win, 1280, 40)  # park it to the right of the sim
+                        placed = True
+                    cv2.waitKey(1)
+
                 viewer.sync()
                 time.sleep(max(0.0, dt - (time.perf_counter() - t0)))
     except KeyboardInterrupt:
         print("\nStopping.")
     finally:
+        cv2.destroyAllWindows()
         ctrl.disconnect()
         real.disconnect()
 
