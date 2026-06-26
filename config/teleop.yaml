@@ -27,13 +27,13 @@ global_speed: 1.0     # master multiplier on every joint speed (tune live)
 axes:
   shoulder_pan:  { axis: 0, speed: 60, invert: false }   # left stick L/R
   shoulder_lift: { axis: 1, speed: 60, invert: true  }   # left stick U/D
-  wrist_roll:    { axis: 2, speed: 80, invert: false }   # right stick L/R
+  wrist_roll:    { axis: 2, speed: 80, invert: true  }   # right stick L/R
   elbow_flex:    { axis: 3, speed: 60, invert: false }   # right stick U/D
 
 # wrist_flex is driven by the two triggers (one tilts up, the other down).
 wrist_flex:
-  axis_down: 4          # left trigger
-  axis_up: 5            # right trigger
+  axis_down: 5          # right trigger
+  axis_up: 4            # left trigger
   speed: 60
 
 # Gripper: HOLD A to open / B to close gradually (release to hold position).
