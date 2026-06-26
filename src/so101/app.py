@@ -131,6 +131,14 @@ def camera_mode() -> None:
         cameras.preview("desk")
 
 
+def setup_motors_mode() -> None:
+    cfg = load_config("robot")
+    print(f"Assigning motor IDs on {cfg['port']}.")
+    print("Connect ONE motor at a time to the controller board when prompted.")
+    _lerobot("lerobot-setup-motors", "--robot.type=so101_follower",
+             f"--robot.port={cfg['port']}", f"--robot.id={cfg['id']}")
+
+
 def calibrate_mode() -> None:
     cfg = load_config("robot")
     print(f"Calibrating SO-101 follower on {cfg['port']} (id: {cfg['id']}).")
@@ -151,8 +159,9 @@ MODES = [
     ("Run a trained policy (sim or real)", policy_mode),
     ("Train a policy", train_mode),
     ("Cameras: list / preview", camera_mode),
-    ("Calibrate the arm", calibrate_mode),
     ("Find the arm's serial port", findport_mode),
+    ("Assign motor IDs (first-time setup)", setup_motors_mode),
+    ("Calibrate the arm", calibrate_mode),
 ]
 
 

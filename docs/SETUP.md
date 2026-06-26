@@ -75,16 +75,33 @@ continue with the hardware steps below.
 ```
 
 Unplug the arm when prompted, plug it back in, and note the `COM` port it reports.
-Put that value in [config/robot.yaml](../config/robot.yaml) under `port:`.
+Put that value in [config/robot.yaml](../config/robot.yaml) under `port:` (or type it
+into the launcher's "USB port" box and click **Save to config**).
+
+## 2b. Assign motor IDs (first time only)
+
+The six servos ship with the same default ID, so you set them one at a time before
+they can share a bus. Power the motor bus (the controller board needs its own power,
+not just USB), then:
+
+```bash
+lerobot-setup-motors --robot.type=so101_follower --robot.port=COM7   # your port
+```
+
+It walks through the joints (gripper → … → shoulder_pan). For each, **connect only that
+one motor** to the controller board and press Enter; it writes the ID and baud rate.
+After all six are assigned, daisy-chain them in joint order. In the launcher this is the
+**Real arm → 1. Assign motor IDs** button.
 
 ## 3. Calibrate the follower (one time)
 
-```powershell
-.\scripts\calibrate.ps1
+```bash
+lerobot-calibrate --robot.type=so101_follower --robot.port=COM7 --robot.id=so101_follower
 ```
 
 Move each joint through its full range when prompted. Calibration is stored under the
-`id` in `config/robot.yaml`; you only redo this if you re-cable or swap a servo.
+`id` in `config/robot.yaml`; you only redo this if you re-cable or swap a servo. In the
+launcher this is **Real arm → 2. Calibrate**.
 
 ## 4. Set up the cameras
 

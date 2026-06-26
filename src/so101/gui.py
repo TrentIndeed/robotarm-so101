@@ -14,13 +14,14 @@ The text-menu version is still available as ``python -m so101.app``.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
 
-from . import REPO_ROOT, load_config
+from . import CONFIG_DIR, REPO_ROOT, load_config
 
 # Kept local so the GUI starts instantly (importing record would pull in mujoco).
 DEFAULT_TASK = "Pick up the small object and place it at the target."
@@ -198,17 +199,44 @@ class Launcher:
 
     def _hardware_section(self) -> None:
         f = self._group("Real arm")
-        self.teleop_cams = tk.BooleanVar(value=False)
-        ttk.Button(f, text="Teleoperate", command=self._do_teleop).grid(row=0, column=0, **PAD)
-        ttk.Checkbutton(f, text="with cameras", variable=self.teleop_cams).grid(
-            row=0, column=1, sticky="w", **PAD)
-        ttk.Button(f, text="Controller debug",
-                   command=lambda: self._launch_module("so101.xbox_teleop", ["--debug"], "controller debug")
-                   ).grid(row=0, column=2, **PAD)
-        ttk.Button(f, text="Calibrate", command=self._do_calibrate).grid(row=0, column=3, **PAD)
+        self.hw_port = tk.StringVar(value=load_config("robot")["port"])
+
+        # First-time setup, left to right in the order you run them.
+        ttk.Label(f, text="USB port:").grid(row=0, column=0, sticky="w", **PAD)
+        ttk.Entry(f, textvariable=self.hw_port, width=10).grid(row=0, column=1, sticky="w", **PAD)
         ttk.Button(f, text="Find port",
                    command=lambda: self._launch_exe("lerobot-find-port", [], "find port")
-                   ).grid(row=0, column=4, **PAD)
+                   ).grid(row=0, column=2, **PAD)
+        ttk.Button(f, text="Save to config", command=self._save_port).grid(row=0, column=3, **PAD)
+
+        ttk.Label(f, text="Setup:").grid(row=1, column=0, sticky="w", **PAD)
+        ttk.Button(f, text="1. Assign motor IDs", command=self._do_setup_motors).grid(
+            row=1, column=1, columnspan=2, sticky="we", **PAD)
+        ttk.Button(f, text="2. Calibrate", command=self._do_calibrate).grid(row=1, column=3, **PAD)
+
+        ttk.Separator(f, orient="horizontal").grid(row=2, column=0, columnspan=5, sticky="we", pady=4)
+
+        self.teleop_cams = tk.BooleanVar(value=False)
+        ttk.Button(f, text="Teleoperate", command=self._do_teleop).grid(row=3, column=0, **PAD)
+        ttk.Checkbutton(f, text="with cameras", variable=self.teleop_cams).grid(
+            row=3, column=1, sticky="w", **PAD)
+        ttk.Button(f, text="Controller debug",
+                   command=lambda: self._launch_module("so101.xbox_teleop", ["--debug"], "controller debug")
+                   ).grid(row=3, column=2, **PAD)
+
+    def _save_port(self) -> None:
+        # Rewrite just the `port:` line in config/robot.yaml (preserves comments).
+        path = CONFIG_DIR / "robot.yaml"
+        text = path.read_text(encoding="utf-8")
+        text = re.sub(r"(?m)^(port:\s*).*$", lambda m: m.group(1) + self.hw_port.get(), text)
+        path.write_text(text, encoding="utf-8")
+        self.status.set(f"Saved port {self.hw_port.get()} to config/robot.yaml.")
+
+    def _do_setup_motors(self) -> None:
+        cfg = load_config("robot")
+        self._launch_exe("lerobot-setup-motors", [
+            "--robot.type=so101_follower", f"--robot.port={self.hw_port.get()}", f"--robot.id={cfg['id']}",
+        ], "motor ID setup (follow the console prompts)")
 
     def _do_teleop(self) -> None:
         args = [] if self.teleop_cams.get() else ["--no-cameras"]
@@ -217,7 +245,7 @@ class Launcher:
     def _do_calibrate(self) -> None:
         cfg = load_config("robot")
         self._launch_exe("lerobot-calibrate", [
-            "--robot.type=so101_follower", f"--robot.port={cfg['port']}", f"--robot.id={cfg['id']}",
+            "--robot.type=so101_follower", f"--robot.port={self.hw_port.get()}", f"--robot.id={cfg['id']}",
         ], "calibration")
 
     def _camera_section(self) -> None:
