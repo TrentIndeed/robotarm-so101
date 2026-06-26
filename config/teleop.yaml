@@ -48,5 +48,5 @@ gripper:
 # Optional safety / convenience buttons.
 buttons:
   emergency_stop: 6     # Back/View — holds all joints, ignores sticks while held
-  episode_done: 7       # Start/Menu — (during recording) save episode, go to next
-  episode_cancel: 2     # X — (during recording) discard & re-record current episode
+  episode_done: 7       # Start/Menu — toggle recording: begin, then stop + save
+  episode_cancel: 2     # X — discard the take currently being recorded

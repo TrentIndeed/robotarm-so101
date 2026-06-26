@@ -73,19 +73,38 @@ def teleop_loop(with_cameras: bool = False) -> None:
         robot.disconnect()
 
 
-def _camera_panel(obs: dict, cam_names: list):
-    """Stack the camera frames (RGB->BGR, labeled) into one image for cv2.imshow."""
+def _open_cv_cameras():
+    """Open the configured cameras directly via cv2 (display only, decoupled from the
+    robot). A flaky camera then just shows black instead of hanging the robot's
+    camera warmup. Returns a list of (name, VideoCapture, cv2_rotate_code)."""
+    import cv2
+
+    from . import load_config
+    from .cameras import _cv2_rotate_code
+
+    caps = []
+    for name, c in load_config("cameras")["cameras"].items():
+        cap = cv2.VideoCapture(int(c["index_or_path"]), cv2.CAP_DSHOW)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, c["width"])
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, c["height"])
+        caps.append((name, cap, _cv2_rotate_code(c.get("rotation"))))
+    return caps
+
+
+def _grab_panel(caps):
+    """Read each capture and stack the frames (labeled) into one image, or None."""
     import cv2
 
     tiles = []
-    for cam in cam_names:
-        img = obs.get(cam)
-        if img is None:
+    for name, cap, rot in caps:
+        ok, frame = cap.read()
+        if not ok or frame is None:
             continue
-        bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        bgr = cv2.resize(bgr, (480, 360))
-        cv2.putText(bgr, cam, (8, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-        tiles.append(bgr)
+        if rot is not None:
+            frame = cv2.rotate(frame, rot)
+        frame = cv2.resize(frame, (480, 360))
+        cv2.putText(frame, name, (8, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        tiles.append(frame)
     return cv2.vconcat(tiles) if tiles else None
 
 
@@ -97,10 +116,11 @@ def mirror_loop() -> None:
     from .robot import make_robot
     from .sim.sim_robot import SimRobot
 
-    real = make_robot(sim=False, use_cameras=True)
+    # Joints-only robot -> connects fast and reliably (no camera warmup to hang on).
+    real = make_robot(sim=False, use_cameras=False)
     sim = SimRobot(use_cameras=False)
     ctrl = XboxTeleopController()
-    cam_names = [k for k, v in real.observation_features.items() if isinstance(v, tuple)]
+    caps = _open_cv_cameras()   # cameras opened separately, best-effort
 
     real.connect()
     ctrl.connect()
@@ -115,10 +135,9 @@ def mirror_loop() -> None:
                 t0 = time.perf_counter()
                 action = ctrl.compute_action()
                 real.send_action(action)
-                obs = real.get_observation()
-                sim.set_pose(obs)                      # mirror measured pose
+                sim.set_pose(real.get_observation())   # mirror measured pose
 
-                panel = _camera_panel(obs, cam_names)
+                panel = _grab_panel(caps)
                 if panel is not None:
                     cv2.imshow(win, panel)
                     if not placed:
@@ -131,6 +150,8 @@ def mirror_loop() -> None:
     except KeyboardInterrupt:
         print("\nStopping.")
     finally:
+        for _name, cap, _rot in caps:
+            cap.release()
         cv2.destroyAllWindows()
         ctrl.disconnect()
         real.disconnect()

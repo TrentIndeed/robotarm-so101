@@ -11,11 +11,14 @@ policy can be trained on sim data and later run on the real arm unchanged.
 Each episode is one attempt at: *pick up the small object and place it at the target*.
 Both cameras (gripper + desk), joint states, and commanded actions are saved in sync.
 
-Controls while recording (button numbers from config/teleop.yaml):
-    sticks/triggers/A/B   drive the arm
-    Start/Menu            save the current episode and move to the next
-    X                     discard and re-record the current episode
+Controls (button numbers from config/teleop.yaml):
+    sticks/triggers/A/B   drive the arm (works in idle too)
+    Start/Menu            begin recording; press again to stop + save the episode
+    X                     discard the take you're currently recording
     Ctrl+C                stop and save the dataset as-is
+
+Frames are only captured between Start (begin) and Start (stop). While idle you can
+reposition the object / return the arm home without it being recorded.
 
 The gripper + desk camera feeds are shown in OpenCV windows so you can see what the
 policy will see (in sim, that's how you watch the arm). Data is written under
@@ -51,13 +54,17 @@ def _reset_sim_block(robot, rng: random.Random) -> None:
     mujoco.mj_forward(m, d)
 
 
-def _show(obs: dict, cam_names) -> None:
-    """Display the camera feeds (RGB arrays) in OpenCV windows."""
+def _show(obs: dict, cam_names, recording: bool) -> None:
+    """Display the camera feeds with a REC / idle indicator."""
     import cv2
 
+    label = "* REC" if recording else "idle"
+    color = (0, 0, 255) if recording else (0, 200, 0)
     for cam in cam_names:
         if cam in obs:
-            cv2.imshow(f"so101: {cam}", cv2.cvtColor(obs[cam], cv2.COLOR_RGB2BGR))
+            img = cv2.cvtColor(obs[cam], cv2.COLOR_RGB2BGR)
+            cv2.putText(img, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+            cv2.imshow(f"so101: {cam}", img)
     cv2.waitKey(1)
 
 
@@ -89,68 +96,70 @@ def record(num_episodes: int, task: str, repo_id: str, fps: int | None, sim: boo
     dt = 1.0 / fps
     n_steps = max(1, round(dt / robot.model.opt.timestep)) if sim else 0
 
+    # Edge-triggered button reads — compute_action() pumps pygame events each tick.
+    prev: dict[int, bool] = {}
+
+    def pressed(b: int) -> bool:
+        now = bool(ctrl.joystick.get_button(b))
+        was = prev.get(b, False)
+        prev[b] = now
+        return now and not was
+
     print(f"Recording to {root}\nTask: {task}\nBackend: {'SIM' if sim else 'REAL'}\n")
+    print("Start = begin recording, Start again = stop + save. X = discard current take.")
+    print("Between takes (idle) you can reposition the object — that is NOT recorded.\n")
+
+    if sim:
+        _reset_sim_block(robot, rng)
+    ctrl.seed_targets(robot.get_observation())
 
     episode = 0
+    recording = False
     try:
         while episode < num_episodes:
-            print(f"--- Episode {episode + 1}/{num_episodes} — Start=save, X=re-record ---")
+            t0 = time.perf_counter()
+
+            obs = robot.get_observation()
+            action = ctrl.compute_action()
+            robot.send_action(action)
             if sim:
-                _reset_sim_block(robot, rng)
-            ctrl.seed_targets(robot.get_observation())
+                robot.step(n_steps)
 
-            cancelled = False
-            while True:
-                t0 = time.perf_counter()
-
-                obs = robot.get_observation()
-                action = ctrl.compute_action()
-                robot.send_action(action)
+            # Start toggles recording on/off (off -> save). X discards the active take.
+            if pressed(btn["episode_done"]):
+                if not recording:
+                    recording = True
+                    print(f"* REC  episode {episode + 1}/{num_episodes} ...")
+                else:
+                    dataset.save_episode(parallel_encoding=False)  # sync = robust on Windows
+                    episode += 1
+                    recording = False
+                    print(f"  saved ({episode}/{num_episodes}). Reposition, then Start for the next.\n")
+                    if sim and episode < num_episodes:
+                        _reset_sim_block(robot, rng)
+            elif recording and pressed(btn["episode_cancel"]):
+                dataset.clear_episode_buffer()
+                recording = False
+                print("  discarded. Start to retry.\n")
                 if sim:
-                    robot.step(n_steps)
-                if display:
-                    _show(obs, cam_names)
+                    _reset_sim_block(robot, rng)
 
-                if ctrl.joystick.get_button(btn["episode_done"]):
-                    break
-                if ctrl.joystick.get_button(btn["episode_cancel"]):
-                    cancelled = True
-                    break
-
+            # Only capture frames while actively recording (idle/reposition is skipped).
+            if recording:
                 obs_frame = build_dataset_frame(dataset.features, obs, prefix=OBS_STR)
                 act_frame = build_dataset_frame(dataset.features, action, prefix=ACTION)
                 dataset.add_frame({**obs_frame, **act_frame, "task": task})
 
-                time.sleep(max(0.0, dt - (time.perf_counter() - t0)))
+            if display:
+                _show(obs, cam_names, recording)
 
-            if cancelled:
-                dataset.clear_episode_buffer()
-                print("  re-recording this episode.\n")
-                _wait_release(ctrl, btn["episode_cancel"])
-            else:
-                # Synchronous encoding: avoids Windows ProcessPool fragility; the
-                # ~1-2 s encode between episodes is fine for a teleop workflow.
-                dataset.save_episode(parallel_encoding=False)
-                episode += 1
-                print("  saved.\n")
-                _wait_release(ctrl, btn["episode_done"])
+            time.sleep(max(0.0, dt - (time.perf_counter() - t0)))
     except KeyboardInterrupt:
         print("\nStopped early.")
     finally:
         ctrl.disconnect()
         robot.disconnect()
         print(f"\nDone. {episode} episode(s) in {root}")
-
-
-def _wait_release(ctrl, button: int) -> None:
-    """Block until a button is let go, so one press isn't read twice."""
-    import pygame
-
-    while True:
-        pygame.event.pump()
-        if not ctrl.joystick.get_button(button):
-            return
-        time.sleep(0.02)
 
 
 def main() -> None:
