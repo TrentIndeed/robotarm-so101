@@ -11,11 +11,13 @@
 
 cameras:
   # Wrist/gripper-mounted camera — close-up view for the grasp.
+  # Mounted upside down, so rotate the image 180 to make it upright.
   gripper:
     index_or_path: 1
     width: 640
     height: 480
     fps: 30
+    rotation: 180
 
   # Fixed camera looking at the whole desk / workspace (the connected webcam).
   desk:

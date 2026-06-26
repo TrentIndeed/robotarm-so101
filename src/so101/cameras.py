@@ -29,13 +29,27 @@ def build_camera_configs() -> dict:
     cfg = load_config("cameras")["cameras"]
     cameras: dict = {}
     for name, c in cfg.items():
-        cameras[name] = OpenCVCameraConfig(
-            index_or_path=c["index_or_path"],
-            width=c["width"],
-            height=c["height"],
-            fps=c["fps"],
-        )
+        kwargs = dict(index_or_path=c["index_or_path"], width=c["width"],
+                      height=c["height"], fps=c["fps"])
+        # Optional per-camera rotation (0/90/180/270) and pixel format (e.g. MJPG).
+        if c.get("rotation"):
+            kwargs["rotation"] = c["rotation"]
+        if c.get("fourcc"):
+            kwargs["fourcc"] = c["fourcc"]
+        cameras[name] = OpenCVCameraConfig(**kwargs)
     return cameras
+
+
+def _cv2_rotate_code(rotation):
+    """Map a config rotation (90/180/270/-90) to a cv2.rotate code, or None."""
+    import cv2
+
+    return {
+        90: cv2.ROTATE_90_CLOCKWISE,
+        180: cv2.ROTATE_180,
+        270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+        -90: cv2.ROTATE_90_COUNTERCLOCKWISE,
+    }.get(rotation)
 
 
 def list_cameras(max_index: int = 8) -> None:
@@ -78,11 +92,14 @@ def preview(name: str) -> None:
     if not cap.isOpened():
         raise SystemExit(f"Could not open camera '{name}' at index {c['index_or_path']}.")
 
+    rot = _cv2_rotate_code(c.get("rotation"))  # match what recording will capture
     print(f"Previewing '{name}' — press 'q' in the window to quit.")
     while True:
         ok, frame = cap.read()
         if not ok:
             break
+        if rot is not None:
+            frame = cv2.rotate(frame, rot)
         cv2.imshow(f"so101: {name}", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
