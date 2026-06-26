@@ -239,7 +239,7 @@ class Launcher:
         ], "motor ID setup (follow the console prompts)")
 
     def _do_teleop(self) -> None:
-        args = [] if self.teleop_cams.get() else ["--no-cameras"]
+        args = ["--cameras"] if self.teleop_cams.get() else []
         self._launch_module("so101.xbox_teleop", args, "teleop")
 
     def _do_calibrate(self) -> None:

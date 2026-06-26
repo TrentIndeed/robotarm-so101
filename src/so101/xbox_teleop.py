@@ -44,9 +44,11 @@ def debug_loop() -> None:
         pygame.quit()
 
 
-def teleop_loop(with_cameras: bool) -> None:
+def teleop_loop(with_cameras: bool = False) -> None:
     from .robot import build_robot
 
+    # Cameras default off — teleop only commands joints; opening them just risks
+    # a camera error (and isn't needed until you record).
     robot = build_robot(with_cameras=with_cameras)
     ctrl = XboxTeleopController()
 
@@ -74,13 +76,15 @@ def teleop_loop(with_cameras: bool) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Xbox teleop for the SO-101 follower")
     parser.add_argument("--debug", action="store_true", help="print controller axes/buttons and exit")
-    parser.add_argument("--no-cameras", action="store_true", help="skip opening cameras (faster)")
+    # Teleop doesn't use camera images, so cameras are OFF by default — opt in with
+    # --cameras (only useful to confirm the cameras are wired before recording).
+    parser.add_argument("--cameras", action="store_true", help="also open the cameras")
     args = parser.parse_args()
 
     if args.debug:
         debug_loop()
     else:
-        teleop_loop(with_cameras=not args.no_cameras)
+        teleop_loop(with_cameras=args.cameras)
 
 
 if __name__ == "__main__":
