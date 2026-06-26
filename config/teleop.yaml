@@ -25,10 +25,10 @@ global_speed: 1.0     # master multiplier on every joint speed (tune live)
 # `speed` = normalized units/second at full deflection (joint range is 200 units
 # wide, so e.g. speed 60 sweeps the full range in ~3.3 s). Start gentle.
 axes:
-  shoulder_pan:  { axis: 0, speed: 60, invert: true  }   # left stick L/R
+  shoulder_pan:  { axis: 0, speed: 60, invert: false }   # left stick L/R
   shoulder_lift: { axis: 1, speed: 60, invert: true  }   # left stick U/D
   wrist_roll:    { axis: 2, speed: 80, invert: false }   # right stick L/R
-  elbow_flex:    { axis: 3, speed: 60, invert: true  }   # right stick U/D
+  elbow_flex:    { axis: 3, speed: 60, invert: false }   # right stick U/D
 
 # wrist_flex is driven by the two triggers (one tilts up, the other down).
 wrist_flex:
@@ -36,13 +36,14 @@ wrist_flex:
   axis_up: 5            # right trigger
   speed: 60
 
-# Gripper toggles open/closed on button press (edge-triggered).
+# Gripper: HOLD A to open / B to close gradually (release to hold position).
 # Xbox button indices (pygame): A=0, B=1, X=2, Y=3, LB=4, RB=5.
 gripper:
-  open_button: 0        # A → open
-  close_button: 1       # B → close
-  open_pos: 100
-  closed_pos: 0
+  open_button: 0        # A → hold to open
+  close_button: 1       # B → hold to close
+  speed: 80             # gripper units/sec while held (0..100 range)
+  open_pos: 100         # fully-open clamp
+  closed_pos: 0         # fully-closed clamp
 
 # Optional safety / convenience buttons.
 buttons:

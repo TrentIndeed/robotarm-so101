@@ -39,7 +39,6 @@ class XboxTeleopController:
 
         self.joystick = None          # set in connect()
         self.targets: dict[str, float] = {}   # joint -> normalized target
-        self._prev_buttons: dict[int, bool] = {}
 
     # -- lifecycle -----------------------------------------------------------
     def connect(self) -> None:
@@ -68,13 +67,6 @@ class XboxTeleopController:
     # -- per-tick ------------------------------------------------------------
     def _axis(self, idx: int) -> float:
         return _deadzone(self.joystick.get_axis(idx), self.deadzone)
-
-    def _pressed(self, button: int) -> bool:
-        """Edge-triggered: True only on the tick the button goes down."""
-        now = bool(self.joystick.get_button(button))
-        was = self._prev_buttons.get(button, False)
-        self._prev_buttons[button] = now
-        return now and not was
 
     def compute_action(self) -> dict:
         """Pump controller events and return the next ``{joint}.pos`` action dict."""
@@ -112,12 +104,15 @@ class XboxTeleopController:
             JOINT_MAX,
         )
 
-        # Gripper toggles open/closed on button edges.
+        # Gripper: HOLD open/close to drive it gradually (release to hold position),
+        # rather than snapping fully open/closed on a press.
         g = cfg["gripper"]
-        if self._pressed(g["open_button"]):
-            self.targets["gripper"] = float(g["open_pos"])
-        elif self._pressed(g["close_button"]):
-            self.targets["gripper"] = float(g["closed_pos"])
+        glo, ghi = float(g["closed_pos"]), float(g["open_pos"])
+        gstep = g.get("speed", 80) * gs
+        if self.joystick.get_button(g["open_button"]):
+            self.targets["gripper"] = _clip(self.targets["gripper"] + gstep, min(glo, ghi), max(glo, ghi))
+        elif self.joystick.get_button(g["close_button"]):
+            self.targets["gripper"] = _clip(self.targets["gripper"] - gstep, min(glo, ghi), max(glo, ghi))
 
         return {f"{j}.pos": v for j, v in self.targets.items()}
 
