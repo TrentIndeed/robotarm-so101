@@ -6,24 +6,20 @@
 #
 # Keep every camera at the same fps as the recording loop in config/teleop.yaml.
 #
-# CURRENT SETUP: one webcam only (used as the desk/overview view). The wrist
-# "gripper" camera is commented out until its 3D-printed mount is ready — uncomment
-# it and set its real index then. Whatever cameras are listed here are what BOTH the
-# real arm and the sim record, so they stay matched.
+# Detected on this machine: index 0 = desk webcam, index 1 = wrist gripper cam,
+# index 2 = OBS Virtual Camera (NOT a real device — don't use it).
 
 cameras:
+  # Wrist/gripper-mounted camera — close-up view for the grasp.
+  gripper:
+    index_or_path: 1
+    width: 640
+    height: 480
+    fps: 30
+
   # Fixed camera looking at the whole desk / workspace (the connected webcam).
   desk:
     index_or_path: 0
     width: 640
     height: 480
     fps: 30
-
-  # Wrist/gripper-mounted camera — close-up view for the grasp.
-  # Not connected yet (needs the printed wrist mount). Uncomment when ready and set
-  # its index (check with `python -m so101.cameras --list`).
-  # gripper:
-  #   index_or_path: 1
-  #   width: 640
-  #   height: 480
-  #   fps: 30
