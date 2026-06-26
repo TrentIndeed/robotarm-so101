@@ -220,9 +220,12 @@ class Launcher:
         ttk.Button(f, text="Teleoperate", command=self._do_teleop).grid(row=3, column=0, **PAD)
         ttk.Checkbutton(f, text="with cameras", variable=self.teleop_cams).grid(
             row=3, column=1, sticky="w", **PAD)
+        ttk.Button(f, text="Teleoperate + 3D view",
+                   command=lambda: self._launch_module("so101.xbox_teleop", ["--mirror"], "teleop + 3D mirror")
+                   ).grid(row=3, column=2, **PAD)
         ttk.Button(f, text="Controller debug",
                    command=lambda: self._launch_module("so101.xbox_teleop", ["--debug"], "controller debug")
-                   ).grid(row=3, column=2, **PAD)
+                   ).grid(row=3, column=3, **PAD)
 
     def _save_port(self) -> None:
         # Rewrite just the `port:` line in config/robot.yaml (preserves comments).

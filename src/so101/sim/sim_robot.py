@@ -129,3 +129,21 @@ class SimRobot:
             for f in FINGER_JOINTS:
                 self.data.ctrl[self._act[f]] = target
         return action
+
+    def set_pose(self, observation: dict) -> None:
+        """Snap the sim joints to match normalized positions (visual mirror, no physics).
+
+        Used to mirror the real arm: feed it ``real_robot.get_observation()`` and the
+        sim shows the arm's live measured pose.
+        """
+        for j in REVOLUTE_JOINTS:
+            key = f"{j}.pos"
+            if key in observation:
+                self.data.qpos[self._qadr[j]] = self._norm_to_angle(j, observation[key])
+        if "gripper.pos" in observation:
+            lo, hi = self._range["left_finger"]
+            n = max(0.0, min(100.0, observation["gripper.pos"]))
+            pos = lo + (n / 100.0) * (hi - lo)
+            for f in FINGER_JOINTS:
+                self.data.qpos[self._qadr[f]] = pos
+        mujoco.mj_forward(self.model, self.data)

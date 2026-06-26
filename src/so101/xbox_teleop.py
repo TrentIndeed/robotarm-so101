@@ -73,9 +73,44 @@ def teleop_loop(with_cameras: bool = False) -> None:
         robot.disconnect()
 
 
+def mirror_loop() -> None:
+    """Drive the real arm while a MuJoCo 3D window mirrors its live measured pose."""
+    import mujoco.viewer
+
+    from .robot import make_robot
+    from .sim.sim_robot import SimRobot
+
+    real = make_robot(sim=False, use_cameras=False)
+    sim = SimRobot(use_cameras=False)
+    ctrl = XboxTeleopController()
+
+    real.connect()
+    ctrl.connect()
+    ctrl.seed_targets(real.get_observation())
+    print("Driving the REAL arm; the 3D window mirrors it. Back/View = hold, "
+          "Ctrl+C or close the window to stop.")
+    dt = ctrl.dt
+    try:
+        with mujoco.viewer.launch_passive(sim.model, sim.data) as viewer:
+            while viewer.is_running():
+                t0 = time.perf_counter()
+                action = ctrl.compute_action()
+                real.send_action(action)
+                sim.set_pose(real.get_observation())   # mirror measured pose
+                viewer.sync()
+                time.sleep(max(0.0, dt - (time.perf_counter() - t0)))
+    except KeyboardInterrupt:
+        print("\nStopping.")
+    finally:
+        ctrl.disconnect()
+        real.disconnect()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Xbox teleop for the SO-101 follower")
     parser.add_argument("--debug", action="store_true", help="print controller axes/buttons and exit")
+    parser.add_argument("--mirror", action="store_true",
+                        help="drive the real arm with a 3D MuJoCo window mirroring it")
     # Teleop doesn't use camera images, so cameras are OFF by default — opt in with
     # --cameras (only useful to confirm the cameras are wired before recording).
     parser.add_argument("--cameras", action="store_true", help="also open the cameras")
@@ -83,6 +118,8 @@ def main() -> None:
 
     if args.debug:
         debug_loop()
+    elif args.mirror:
+        mirror_loop()
     else:
         teleop_loop(with_cameras=args.cameras)
 
