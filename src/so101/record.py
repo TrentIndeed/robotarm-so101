@@ -157,9 +157,12 @@ def record(num_episodes: int, task: str, repo_id: str, fps: int | None, sim: boo
     except KeyboardInterrupt:
         print("\nStopped early.")
     finally:
+        # REQUIRED: flushes buffered episode metadata + parquet footers. Without it
+        # the dataset is invalid (can't be viewed or trained on).
+        dataset.finalize()
         ctrl.disconnect()
         robot.disconnect()
-        print(f"\nDone. {episode} episode(s) in {root}")
+        print(f"\nDone. {episode} episode(s) saved + finalized in {root}")
 
 
 def main() -> None:
