@@ -180,11 +180,39 @@ def mirror_loop() -> None:
         real.disconnect()
 
 
+def vision_loop(cam_index: int) -> None:
+    """Drive the real arm by tracking your arm/hand with a webcam (experimental)."""
+    from .robot import make_robot
+    from .vision_control import VisionController
+
+    real = make_robot(sim=False, use_cameras=False)
+    ctrl = VisionController(cam_index=cam_index)
+
+    real.connect()
+    ctrl.connect()
+    ctrl.seed_targets(real.get_observation())
+    print("Vision teleop running. SPACE in the feedback window = engage/disengage. Ctrl+C to stop.")
+    dt = ctrl.dt
+    try:
+        while True:
+            t0 = time.perf_counter()
+            real.send_action(ctrl.compute_action())
+            time.sleep(max(0.0, dt - (time.perf_counter() - t0)))
+    except KeyboardInterrupt:
+        print("\nStopping.")
+    finally:
+        ctrl.disconnect()
+        real.disconnect()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Xbox teleop for the SO-101 follower")
     parser.add_argument("--debug", action="store_true", help="print controller axes/buttons and exit")
     parser.add_argument("--mirror", action="store_true",
                         help="drive the real arm with a 3D MuJoCo window mirroring it")
+    parser.add_argument("--vision", action="store_true",
+                        help="control by webcam arm/hand tracking instead of the pad (experimental)")
+    parser.add_argument("--cam", type=int, default=2, help="operator webcam index for --vision")
     # Teleop doesn't use camera images, so cameras are OFF by default — opt in with
     # --cameras (only useful to confirm the cameras are wired before recording).
     parser.add_argument("--cameras", action="store_true", help="also open the cameras")
@@ -192,6 +220,8 @@ def main() -> None:
 
     if args.debug:
         debug_loop()
+    elif args.vision:
+        vision_loop(args.cam)
     elif args.mirror:
         mirror_loop()
     else:

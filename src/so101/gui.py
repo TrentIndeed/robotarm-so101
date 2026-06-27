@@ -254,6 +254,12 @@ class Launcher:
                    command=lambda: self._launch_module("so101.xbox_teleop", ["--debug"], "controller debug")
                    ).grid(row=3, column=3, **PAD)
 
+        ttk.Label(f, text="Webcam:").grid(row=4, column=0, sticky="w", **PAD)
+        self.vision_cam = self._var("vision_cam", "2")
+        ttk.Entry(f, textvariable=self.vision_cam, width=4).grid(row=4, column=1, sticky="w", **PAD)
+        ttk.Button(f, text="Vision control (track my arm)", command=self._do_vision).grid(
+            row=4, column=2, columnspan=2, sticky="we", **PAD)
+
     def _save_port(self) -> None:
         # Rewrite just the `port:` line in config/robot.yaml (preserves comments).
         path = CONFIG_DIR / "robot.yaml"
@@ -271,6 +277,10 @@ class Launcher:
     def _do_teleop(self) -> None:
         args = ["--cameras"] if self.teleop_cams.get() else []
         self._launch_module("so101.xbox_teleop", args, "teleop")
+
+    def _do_vision(self) -> None:
+        self._launch_module("so101.xbox_teleop", ["--vision", "--cam", self.vision_cam.get()],
+                            "vision control")
 
     def _do_calibrate(self) -> None:
         cfg = load_config("robot")

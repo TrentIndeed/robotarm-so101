@@ -10,6 +10,9 @@ pygame>=2.5
 # MuJoCo ships prebuilt wheels (no C++ compiler needed) and includes a 3D viewer.
 mujoco>=3.1
 
+# Experimental webcam arm/hand control (src/so101/vision_control.py). CPU, no GPU.
+mediapipe>=0.10.30
+
 # Config files.
 pyyaml>=6.0
 
