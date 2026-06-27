@@ -134,7 +134,8 @@ def run(keyboard: bool = False, seed: int | None = None) -> None:
     print("Close the viewer window or press Ctrl+C to quit.\n")
 
     try:
-        with mujoco.viewer.launch_passive(model, data, key_callback=on_key) as viewer:
+        with mujoco.viewer.launch_passive(model, data, key_callback=on_key,
+                                          show_left_ui=False, show_right_ui=False) as viewer:
             while viewer.is_running():
                 t0 = time.perf_counter()
 

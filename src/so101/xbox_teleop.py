@@ -139,16 +139,21 @@ def mirror_loop() -> None:
           "Ctrl+C or close the window to stop.")
     dt = ctrl.dt
     try:
-        with mujoco.viewer.launch_passive(sim.model, sim.data) as viewer:
+        # Hide MuJoCo's left/right menu panels for a clean view.
+        with mujoco.viewer.launch_passive(
+            sim.model, sim.data, show_left_ui=False, show_right_ui=False
+        ) as viewer:
             while viewer.is_running():
                 t0 = time.perf_counter()
                 action = ctrl.compute_action()
                 real.send_action(action)
                 sim.set_pose(real.get_observation())   # mirror measured pose
 
-                overlays = _camera_overlays(caps, viewer.viewport)
-                if overlays:
-                    viewer.set_images(overlays)
+                vp = viewer.viewport          # None during teardown -> skip overlays
+                if vp is not None:
+                    overlays = _camera_overlays(caps, vp)
+                    if overlays:
+                        viewer.set_images(overlays)
                 viewer.sync()
                 time.sleep(max(0.0, dt - (time.perf_counter() - t0)))
     except KeyboardInterrupt:

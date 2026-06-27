@@ -26,7 +26,7 @@ global_speed: 1.0     # master multiplier on every joint speed (tune live)
 # wide, so e.g. speed 60 sweeps the full range in ~3.3 s). Start gentle.
 axes:
   shoulder_pan:  { axis: 0, speed: 60, invert: false }   # left stick L/R
-  shoulder_lift: { axis: 1, speed: 60, invert: true  }   # left stick U/D
+  shoulder_lift: { axis: 1, speed: 60, invert: false }   # left stick U/D
   wrist_roll:    { axis: 2, speed: 80, invert: true  }   # right stick L/R
   elbow_flex:    { axis: 3, speed: 60, invert: false }   # right stick U/D
 
