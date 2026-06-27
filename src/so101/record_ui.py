@@ -28,7 +28,7 @@ import time
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 
 from . import REPO_ROOT, load_config
 from .controller import XboxTeleopController
@@ -38,6 +38,13 @@ from .robot import make_robot
 SETTINGS_PATH = REPO_ROOT / ".app_settings.json"
 CAM_W, CAM_H = 400, 300
 VCODEC = "h264"     # fast x264 encode (~1 s/take) vs the default libsvtav1 (~30 s)
+
+# Reach-calibration dot grid over the desk camera (normalized 0..1), in a snake order
+# so the gripper travels a short path between dots. 3x3 = 9 points covering the table.
+_CALIB_DOTS = []
+for _r, _v in enumerate((0.30, 0.50, 0.70)):
+    _cols = (0.22, 0.50, 0.78) if _r % 2 == 0 else (0.78, 0.50, 0.22)
+    _CALIB_DOTS += [(_u, _v) for _u in _cols]
 
 
 def _load_settings() -> dict:
@@ -79,6 +86,7 @@ class App:
         # "Calibrate reach" state (point-to-reach calibration).
         self._calib_mode = False
         self._calib_samples: list = []
+        self._calib_idx = 0
         self._desk_cursor = (0.5, 0.5)   # latest cursor over the desk camera (normalized)
         self._calib_bar = None
 
@@ -93,7 +101,7 @@ class App:
     def _fresh_shared(self):
         return {"frames": {}, "status": ("Connecting…", "#a60"), "episodes": 0,
                 "recording": False, "running": True, "connected": False, "cam_names": [],
-                "saving": False, "joints": {}}
+                "saving": False, "joints": {}, "calibrating": False}
 
     def _set(self, **kw):
         with self._lock:
@@ -174,6 +182,9 @@ class App:
         self.discard_btn = tk.Button(controls, text="Discard take", width=14, height=2,
                                      state="disabled", command=lambda: self._cmd.put(("discard",)))
         self.discard_btn.grid(row=0, column=1, padx=6)
+        self.calib_btn = tk.Button(controls, text="Calibrate reach", width=14, height=2,
+                                   command=self._calibrate_reach)
+        self.calib_btn.grid(row=0, column=2, padx=6)
 
         self.count = tk.StringVar(value="Saved episodes: 0")
         ttk.Label(self.root, textvariable=self.count, font=("Segoe UI", 12)).pack(pady=2)
@@ -270,6 +281,8 @@ class App:
     def _route(self, kind, arg, name=None):
         from .desktop_control import DesktopController
         from .ik_reach import ReachController
+        if self._calib_mode:
+            return                       # arm is hand-moved; Enter captures dots
         ctrl = self._input
         desk = self._desk_cam()
 
@@ -277,12 +290,6 @@ class App:
         if kind == "mouse" and name == desk:
             w = max(1, arg.widget.winfo_width()); h = max(1, arg.widget.winfo_height())
             self._desk_cursor = (arg.x / w, arg.y / h)
-
-        # Calibration: a left-click on the desk camera captures a sample.
-        if self._calib_mode:
-            if kind == "l" and arg is True and name == desk:
-                self._capture_calib_point()
-            return
 
         if isinstance(ctrl, ReachController):
             if kind == "mouse" and name == desk:
@@ -307,6 +314,12 @@ class App:
 
     def _on_key(self, event, down):
         k = event.keysym.lower()
+        if self._calib_mode:
+            if down and k == "return":
+                self._capture_calib_dot()
+            elif down and k == "backspace":
+                self._undo_calib_dot()
+            return
         if k == "return" and down:
             self._cmd.put(("toggle",))
         elif k == "backspace" and down:
@@ -334,15 +347,21 @@ class App:
             self._populate_cameras(cam_names)
         for cam, frame in frames.items():
             if cam in self.cam_labels:
-                photo = ImageTk.PhotoImage(Image.fromarray(frame).resize((CAM_W, CAM_H)))
+                img = Image.fromarray(frame).resize((CAM_W, CAM_H))
+                if self._calib_mode and cam == self._desk_cam():
+                    self._draw_calib_dots(img)
+                photo = ImageTk.PhotoImage(img)
                 self._imgs[cam] = photo
                 self.cam_labels[cam].configure(image=photo)
 
         ready = connected and bool(cam_names)
-        self.start_btn.configure(state="normal" if (ready and not saving) else "disabled",
+        calib = self._calib_mode
+        self.start_btn.configure(state="disabled" if calib else
+                                 ("normal" if (ready and not saving) else "disabled"),
                                  text="Stop & Save" if recording else "Start recording",
                                  bg="#c33" if recording else "#1a7")
-        self.discard_btn.configure(state="normal" if (ready and recording) else "disabled")
+        self.discard_btn.configure(state="normal" if (ready and recording and not calib) else "disabled")
+        self.calib_btn.configure(state="disabled" if (calib or not ready or recording or saving) else "normal")
         while self.ep_list.size() < episodes:
             self.ep_list.insert("end", f"Episode {self.ep_list.size()}")
         while self.ep_list.size() > episodes:
@@ -425,9 +444,14 @@ class App:
                         recording = self._discard(recording, dataset)
                     elif cmd[0] == "watch" and not recording and not self._get("saving"):
                         dataset = self._watch(dataset, LeRobotDataset, repo_id, root_dir, cmd[1])
+                    elif cmd[0] == "calib_torque" and not sim and hasattr(robot, "bus"):
+                        try:
+                            (robot.bus.enable_torque if cmd[1] else robot.bus.disable_torque)()
+                        except Exception:
+                            pass
 
                 obs = robot.get_observation()
-                if ctrl is not None:
+                if ctrl is not None and not self._get("calibrating"):
                     action = ctrl.compute_action()
                     robot.send_action(action)
                     if sim:
@@ -614,27 +638,33 @@ class App:
         self._refresh_header()
         self._start_worker()
 
-    # -- reach calibration (point-to-table) ----------------------------------
+    # -- reach calibration (point-to-table, hand-moved) ----------------------
     def _calibrate_reach(self):
         if self._calib_mode:
             return
-        msg = ("Teach the arm where the table is.\n\n"
-               "1. Drive the arm (A/D base, W/S lift, Q/E reach, mouse = wrist) so the\n"
-               "   gripper fingertips touch a spot on the table.\n"
-               "2. LEFT-CLICK that exact spot in the DESK camera to capture it.\n"
-               "3. Repeat for 6+ spots spread out (the four corners + middle work well).\n\n"
-               "Then press Finish. Use the REAL arm with the cameras live.")
+        if self.sim:
+            messagebox.showinfo("Calibrate reach",
+                                "Switch to the REAL arm (Settings ▸ Backend) to calibrate reach.",
+                                parent=self.root)
+            return
+        if not self._get("connected") or not self._get("cam_names"):
+            messagebox.showinfo("Calibrate reach",
+                                "Connect to the arm with the cameras live first.", parent=self.root)
+            return
+        msg = ("Calibrate point-to-reach.\n\n"
+               "The arm will RELAX so you can move it by hand. A grid of dots appears on\n"
+               "the desk camera. For each RED dot:\n"
+               "  • move the gripper so its fingertips sit on that spot on the table\n"
+               "  • press ENTER to capture   (Backspace = redo the previous dot)\n\n"
+               f"After all {len(_CALIB_DOTS)} dots it saves and switches to point-to-reach.\n\n"
+               "Hold the arm as it relaxes so it doesn't drop.")
         if not messagebox.askokcancel("Calibrate reach", msg, parent=self.root):
             return
         self._calib_samples = []
-        self._calib_restore_mode = self.input_mode
+        self._calib_idx = 0
         self._calib_mode = True
-        # Jog with keyboard+mouse while calibrating.
-        if self.input_mode != "desktop":
-            self.input_mode = "desktop"
-            self._input_var.set("desktop")
-            self._refresh_legend()
-            self._reconnect()
+        self._set(calibrating=True)
+        self._cmd.put(("calib_torque", False))   # relax the arm (runs on the worker thread)
         self._show_calib_bar()
 
     def _show_calib_bar(self):
@@ -644,9 +674,7 @@ class App:
         self._calib_status = tk.StringVar()
         tk.Label(bar, textvariable=self._calib_status, bg="#243", fg="#dfd",
                  font=("Segoe UI", 10), justify="left").pack(side="left", padx=10, pady=6)
-        self._calib_finish = tk.Button(bar, text="Finish", command=self._finish_calib, state="disabled")
-        self._calib_finish.pack(side="right", padx=6, pady=6)
-        tk.Button(bar, text="Cancel", command=self._cancel_calib).pack(side="right", padx=2, pady=6)
+        tk.Button(bar, text="Cancel", command=self._cancel_calib).pack(side="right", padx=6, pady=6)
         bar.pack(fill="x", padx=10, pady=(0, 4), before=self.cam_box)
         self._calib_bar = bar
         self._update_calib_bar()
@@ -654,51 +682,79 @@ class App:
     def _update_calib_bar(self):
         if self._calib_bar is None:
             return
-        n = len(self._calib_samples)
+        n = len(_CALIB_DOTS)
         self._calib_status.set(
-            "CALIBRATE REACH — touch the table with the gripper, then LEFT-CLICK that spot "
-            f"in the desk camera.    Captured: {n}  (need ≥ 6)")
-        self._calib_finish.configure(state="normal" if n >= 6 else "disabled")
+            f"CALIBRATE REACH — move the gripper to the RED dot on the table, then press ENTER.   "
+            f"Dot {min(self._calib_idx + 1, n)} / {n}    (Backspace = redo last)")
 
-    def _capture_calib_point(self):
+    def _draw_calib_dots(self, img):
+        d = ImageDraw.Draw(img)
+        for i, (u, v) in enumerate(_CALIB_DOTS):
+            x, y = u * CAM_W, v * CAM_H
+            if i < self._calib_idx:
+                color, r = (40, 200, 40), 6        # captured
+            elif i == self._calib_idx:
+                color, r = (255, 40, 40), 9        # current
+            else:
+                color, r = (150, 150, 150), 6      # pending
+            d.ellipse([x - r, y - r, x + r, y + r], fill=color, outline=(255, 255, 255))
+            if i == self._calib_idx:
+                d.ellipse([x - r - 4, y - r - 4, x + r + 4, y + r + 4], outline=(255, 255, 0), width=2)
+            d.text((x + r + 2, y - 6), str(i + 1), fill=(255, 255, 255))
+
+    def _capture_calib_dot(self):
         from .ik_reach import CONTROLLED
+        if self._calib_idx >= len(_CALIB_DOTS):
+            return
         joints = self._get("joints")
         if not joints or any(j not in joints for j in CONTROLLED):
             return
-        u, v = self._desk_cursor
+        u, v = _CALIB_DOTS[self._calib_idx]
         self._calib_samples.append(
             {"u": u, "v": v, "joints": {j: float(joints[j]) for j in CONTROLLED}})
-        self._update_calib_bar()
+        self._calib_idx += 1
+        if self._calib_idx >= len(_CALIB_DOTS):
+            self._finish_calib()
+        else:
+            self._update_calib_bar()
+
+    def _undo_calib_dot(self):
+        if self._calib_idx > 0:
+            self._calib_idx -= 1
+            if self._calib_samples:
+                self._calib_samples.pop()
+            self._update_calib_bar()
 
     def _finish_calib(self):
         from .ik_reach import fit_calibration, save_calibration
+        ok = False
         try:
             save_calibration(fit_calibration(self._calib_samples))
+            ok = True
         except Exception as exc:
             messagebox.showerror("Calibrate reach", f"Could not fit calibration:\n{exc}", parent=self.root)
-            return
+        self._set(calibrating=False)
         self._end_calib()
-        self.input_mode = "reach"
-        self._input_var.set("reach")
-        _save_settings({"input_mode": "reach"})
-        self._refresh_legend()
-        self._reconnect()
-        messagebox.showinfo("Reach calibrated",
-                            "Done. Point at the table in the desk camera and the arm reaches there.\n"
-                            "Scroll = height fine-tune, left/right click = gripper.", parent=self.root)
+        if ok:
+            self.input_mode = "reach"
+            self._input_var.set("reach")
+            _save_settings({"input_mode": "reach"})
+            self._refresh_legend()
+        self._reconnect()     # fresh connect re-enables torque + re-seeds (no jump)
+        if ok:
+            messagebox.showinfo("Reach calibrated",
+                                "Done. Point at the table in the desk camera and the arm reaches there.\n"
+                                "Scroll = height fine-tune, left/right click = gripper.", parent=self.root)
 
     def _cancel_calib(self):
-        restore = getattr(self, "_calib_restore_mode", self.input_mode)
+        self._set(calibrating=False)
         self._end_calib()
-        if self.input_mode != restore:
-            self.input_mode = restore
-            self._input_var.set(restore)
-            self._refresh_legend()
-            self._reconnect()
+        self._reconnect()     # restore torque + re-seed the current mode
 
     def _end_calib(self):
         self._calib_mode = False
         self._calib_samples = []
+        self._calib_idx = 0
         if self._calib_bar is not None:
             self._calib_bar.destroy()
             self._calib_bar = None
