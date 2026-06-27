@@ -91,26 +91,36 @@ def _open_cv_cameras():
     return caps
 
 
-def _grab_panel(caps):
-    """Read each capture and stack the frames (labeled) into one image, or None."""
-    import cv2
+_TILE_W, _TILE_H, _TILE_M = 320, 240, 12  # camera overlay tile size + margin (px)
 
-    tiles = []
+
+def _camera_overlays(caps, viewport):
+    """Read each capture and build (MjrRect, RGB) overlays stacked down the right
+    edge of the viewer. The viewer flips vertically itself, so pass top-down RGB."""
+    import cv2
+    import mujoco
+
+    overlays = []
+    k = 0
     for name, cap, rot in caps:
         ok, frame = cap.read()
         if not ok or frame is None:
             continue
         if rot is not None:
             frame = cv2.rotate(frame, rot)
-        frame = cv2.resize(frame, (480, 360))
-        cv2.putText(frame, name, (8, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-        tiles.append(frame)
-    return cv2.vconcat(tiles) if tiles else None
+        frame = cv2.resize(frame, (_TILE_W, _TILE_H))
+        cv2.putText(frame, name, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # set_images wants RGB
+        left = max(0, viewport.width - _TILE_W - _TILE_M)
+        bottom = max(0, viewport.height - _TILE_M - k * (_TILE_H + _TILE_M) - _TILE_H)
+        overlays.append((mujoco.MjrRect(left, bottom, _TILE_W, _TILE_H), rgb))
+        k += 1
+    return overlays
 
 
 def mirror_loop() -> None:
-    """Drive the real arm with a 3D MuJoCo twin and the live camera feeds beside it."""
-    import cv2
+    """Drive the real arm with a 3D MuJoCo twin and the live camera feeds overlaid
+    inside the viewer (down the right edge) — no separate window."""
     import mujoco.viewer
 
     from .robot import make_robot
@@ -125,10 +135,9 @@ def mirror_loop() -> None:
     real.connect()
     ctrl.connect()
     ctrl.seed_targets(real.get_observation())
-    print("Driving the REAL arm; 3D twin + camera feeds shown. Back/View = hold, "
+    print("Driving the REAL arm; 3D twin + camera feeds (right edge). Back/View = hold, "
           "Ctrl+C or close the window to stop.")
     dt = ctrl.dt
-    win, placed = "so101 cameras", False
     try:
         with mujoco.viewer.launch_passive(sim.model, sim.data) as viewer:
             while viewer.is_running():
@@ -137,14 +146,9 @@ def mirror_loop() -> None:
                 real.send_action(action)
                 sim.set_pose(real.get_observation())   # mirror measured pose
 
-                panel = _grab_panel(caps)
-                if panel is not None:
-                    cv2.imshow(win, panel)
-                    if not placed:
-                        cv2.moveWindow(win, 1280, 40)  # park it to the right of the sim
-                        placed = True
-                    cv2.waitKey(1)
-
+                overlays = _camera_overlays(caps, viewer.viewport)
+                if overlays:
+                    viewer.set_images(overlays)
                 viewer.sync()
                 time.sleep(max(0.0, dt - (time.perf_counter() - t0)))
     except KeyboardInterrupt:
@@ -152,7 +156,6 @@ def mirror_loop() -> None:
     finally:
         for _name, cap, _rot in caps:
             cap.release()
-        cv2.destroyAllWindows()
         ctrl.disconnect()
         real.disconnect()
 
