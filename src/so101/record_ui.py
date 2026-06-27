@@ -177,15 +177,17 @@ class App:
                              highlightbackground="#888")
         self.pad.pack(fill="x", padx=10, pady=(0, 6))
         self.pad.create_text(12, 35, anchor="w", fill="#aaa",
-                             text="Keyboard+Mouse: move mouse over the camera views (or here) = wrist  ·  "
-                                  "L-click = open  ·  R-click = close")
+                             text="Keyboard+Mouse: cursor on a camera — centre = wrist neutral, off-centre = tilt/roll  ·  "
+                                  "scroll = reach  ·  L-click = open  ·  R-click = close")
         self.pad.bind("<Motion>", lambda e: self._route("mouse", e))
         self.pad.bind("<Leave>", lambda e: self._route("leave", e))
         self.pad.bind("<ButtonPress-1>", lambda e: self._route("l", True))
         self.pad.bind("<ButtonRelease-1>", lambda e: self._route("l", False))
         self.pad.bind("<ButtonPress-3>", lambda e: self._route("r", True))
         self.pad.bind("<ButtonRelease-3>", lambda e: self._route("r", False))
-        self.pad.bind("<MouseWheel>", lambda e: self._route("scroll", e))
+        # Windows delivers the wheel to the focused widget, not the hovered one, so
+        # bind it globally (the route is a no-op unless keyboard+mouse mode is active).
+        self.root.bind_all("<MouseWheel>", lambda e: self._route("scroll", e))
         self.root.bind("<KeyPress>", lambda e: self._on_key(e, True))
         self.root.bind("<KeyRelease>", lambda e: self._on_key(e, False))
 
@@ -224,7 +226,6 @@ class App:
             lbl.bind("<ButtonRelease-1>", lambda e: self._route("l", False))
             lbl.bind("<ButtonPress-3>", lambda e: self._route("r", True))
             lbl.bind("<ButtonRelease-3>", lambda e: self._route("r", False))
-            lbl.bind("<MouseWheel>", lambda e: self._route("scroll", e))
             self.cam_labels[name] = lbl
 
     def _refresh_legend(self):
@@ -251,7 +252,7 @@ class App:
         if not isinstance(self._input, DesktopController):
             return
         if kind == "mouse":
-            self._input.on_mouse(arg.x, arg.y)
+            self._input.on_mouse(arg.x, arg.y, arg.widget.winfo_width(), arg.widget.winfo_height())
         elif kind == "leave":
             self._input.on_mouse_leave()
         elif kind == "scroll":

@@ -30,9 +30,17 @@ _KEYS = {
 
 # ---- tunables ----
 KEY_SPEED = 60.0       # normalized units/sec while a key is held
-MOUSE_SENS = 0.35      # units of wrist motion per pixel of mouse movement
+WRIST_SPEED = 70.0     # units/sec wrist motion at full cursor offset from the view center
+WRIST_DEADZONE = 0.12  # central neutral zone (fraction of half-width) where the wrist holds
 GRIP_SPEED = 90.0      # units/sec while a mouse button is held
 SCROLL_STEP = 6.0      # units of elbow motion per mouse-wheel notch
+
+
+def _dz(v):
+    """Zero inside the central deadzone; clamp the rest to [-1, 1]."""
+    if abs(v) < WRIST_DEADZONE:
+        return 0.0
+    return max(-1.0, min(1.0, v))
 
 
 class DesktopController:
@@ -44,9 +52,9 @@ class DesktopController:
 
         self._keys = {k: False for k in _KEYS}     # pre-seeded so no dict resize races
         self._lock = threading.Lock()
-        self._mdx = 0.0
-        self._mdy = 0.0
-        self._last = None
+        self._mx = self._my = 0.0      # latest cursor position within the camera view
+        self._mw = self._mh = 0.0      # that view's size (for the centre point)
+        self._mactive = False          # is the cursor currently over a control surface
         self._lclick = False
         self._rclick = False
         self._scroll = 0.0
@@ -68,16 +76,14 @@ class DesktopController:
         if keysym in self._keys:
             self._keys[keysym] = down
 
-    def on_mouse(self, x, y):
+    def on_mouse(self, x, y, w, h):
         with self._lock:
-            if self._last is not None:
-                self._mdx += x - self._last[0]
-                self._mdy += y - self._last[1]
-            self._last = (x, y)
+            self._mx, self._my, self._mw, self._mh = x, y, w, h
+            self._mactive = True
 
     def on_mouse_leave(self):
         with self._lock:
-            self._last = None
+            self._mactive = False
 
     def set_click(self, which, down):
         if which == "l":
@@ -97,18 +103,24 @@ class DesktopController:
                 self.targets[joint] = _clip(self.targets[joint] + d * step, JOINT_MIN, JOINT_MAX)
 
         with self._lock:
-            dx, dy = self._mdx, self._mdy
+            active = self._mactive
+            mx, my, mw, mh = self._mx, self._my, self._mw, self._mh
             scroll = self._scroll
-            self._mdx = self._mdy = self._scroll = 0.0
+            self._scroll = 0.0
         if scroll:
             self.targets["elbow_flex"] = _clip(
                 self.targets["elbow_flex"] + (scroll / 120.0) * SCROLL_STEP, JOINT_MIN, JOINT_MAX)
-        if dx:
-            self.targets["wrist_roll"] = _clip(self.targets["wrist_roll"] - dx * MOUSE_SENS,
-                                               JOINT_MIN, JOINT_MAX)
-        if dy:
-            self.targets["wrist_flex"] = _clip(self.targets["wrist_flex"] + dy * MOUSE_SENS,
-                                               JOINT_MIN, JOINT_MAX)
+        # Wrist = where the cursor sits relative to the view centre (centre = neutral/hold).
+        if active and mw > 1 and mh > 1:
+            ox = _dz((mx - mw / 2.0) / (mw / 2.0))
+            oy = _dz((my - mh / 2.0) / (mh / 2.0))
+            wstep = WRIST_SPEED * self.dt
+            if ox:
+                self.targets["wrist_roll"] = _clip(self.targets["wrist_roll"] - ox * wstep,
+                                                   JOINT_MIN, JOINT_MAX)
+            if oy:
+                self.targets["wrist_flex"] = _clip(self.targets["wrist_flex"] + oy * wstep,
+                                                   JOINT_MIN, JOINT_MAX)
 
         grip = GRIP_SPEED * self.dt
         if self._lclick:
