@@ -150,11 +150,11 @@ class Launcher:
                               else "local/so101_pick_place")
 
     def _do_record(self) -> None:
-        args = ["--num-episodes", self.rec_eps.get(), "--repo-id", self.rec_repo.get(),
-                "--task", self.rec_task.get()]
+        # The on-screen recording UI (start/stop buttons, counter, watch demos).
+        args = ["--repo-id", self.rec_repo.get(), "--task", self.rec_task.get()]
         if self.rec_backend.get() == "sim":
             args.append("--sim")
-        self._launch_module("so101.record", args, "record")
+        self._launch_module("so101.record_ui", args, "recording UI")
 
     def _policy_section(self) -> None:
         f = self._group("Run a trained policy")
