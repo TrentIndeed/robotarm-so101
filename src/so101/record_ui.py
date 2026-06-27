@@ -71,6 +71,7 @@ class App:
         self._cmd: queue.Queue = queue.Queue()
         self._shared = self._fresh_shared()
         self._worker = None
+        self._save_thread = None
 
         root.title("SO-101")
         self._build_menu()
@@ -82,7 +83,8 @@ class App:
     # -- shared state --------------------------------------------------------
     def _fresh_shared(self):
         return {"frames": {}, "status": ("Connecting…", "#a60"), "episodes": 0,
-                "recording": False, "running": True, "connected": False, "cam_names": []}
+                "recording": False, "running": True, "connected": False, "cam_names": [],
+                "saving": False}
 
     def _set(self, **kw):
         with self._lock:
@@ -193,6 +195,7 @@ class App:
             status, episodes = self._shared["status"], self._shared["episodes"]
             recording, connected = self._shared["recording"], self._shared["connected"]
             cam_names = list(self._shared["cam_names"])
+            saving = self._shared["saving"]
 
         self.status.set(status[0])
         self.status_lbl.configure(fg=status[1])
@@ -206,7 +209,7 @@ class App:
                 self.cam_labels[cam].configure(image=photo)
 
         ready = connected and bool(cam_names)
-        self.start_btn.configure(state="normal" if ready else "disabled",
+        self.start_btn.configure(state="normal" if (ready and not saving) else "disabled",
                                  text="Stop & Save" if recording else "Start recording",
                                  bg="#c33" if recording else "#1a7")
         self.discard_btn.configure(state="normal" if (ready and recording) else "disabled")
@@ -275,7 +278,7 @@ class App:
                         recording = self._toggle(recording, dataset, sim, robot)
                     elif cmd[0] == "discard":
                         recording = self._discard(recording, dataset)
-                    elif cmd[0] == "watch" and not recording:
+                    elif cmd[0] == "watch" and not recording and not self._get("saving"):
                         dataset = self._watch(dataset, LeRobotDataset, repo_id, root_dir, cmd[1])
 
                 obs = robot.get_observation()
@@ -298,6 +301,8 @@ class App:
         except Exception as exc:
             self._set(connected=False, status=(f"Connection failed: {exc}", "#c00"))
         finally:
+            if self._save_thread is not None and self._save_thread.is_alive():
+                self._save_thread.join(timeout=60)   # let an in-flight encode finish
             try:
                 if dataset is not None:
                     dataset.finalize()
@@ -331,17 +336,28 @@ class App:
     # -- worker-thread record actions ----------------------------------------
     def _toggle(self, recording, dataset, sim, robot):
         if not recording:
+            if self._get("saving"):
+                return False                         # previous take still encoding
             if sim:
                 _reset_sim_block(robot, self.rng)
             self._set(recording=True, status=("RECORDING", "#c00"))
             return True
-        self._set(status=("Saving…", "#a60"))
-        dataset.save_episode(parallel_encoding=False)
-        with self._lock:
-            self._shared["episodes"] += 1
-            self._shared["recording"] = False
-            self._shared["status"] = ("idle", "#0a0")
+        # Stop -> encode on a SEPARATE thread so the worker keeps streaming cameras /
+        # driving the arm while the (possibly slow) video encode runs in the background.
+        self._set(recording=False, saving=True, status=("Saving…", "#a60"))
+        self._save_thread = threading.Thread(target=self._save_episode, args=(dataset,), daemon=True)
+        self._save_thread.start()
         return False
+
+    def _save_episode(self, dataset):
+        try:
+            dataset.save_episode(parallel_encoding=False)
+            with self._lock:
+                self._shared["episodes"] += 1
+                self._shared["saving"] = False
+                self._shared["status"] = ("idle", "#0a0")
+        except Exception as exc:
+            self._set(saving=False, status=(f"Save failed: {exc}", "#c00"))
 
     def _discard(self, recording, dataset):
         if not recording:
@@ -434,7 +450,7 @@ class App:
     def _on_close(self):
         self._set(running=False)
         if self._worker is not None:
-            self._worker.join(timeout=5)
+            self._worker.join(timeout=40)   # waits out an in-flight save so it isn't lost
         self.root.destroy()
 
 
