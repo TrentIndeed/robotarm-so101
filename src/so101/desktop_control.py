@@ -24,7 +24,7 @@ from .controller import GRIPPER_MAX, GRIPPER_MIN, JOINT_MAX, JOINT_MIN, _clip
 # key (Tk keysym, lowercase) -> (joint, direction)
 _KEYS = {
     "a": ("shoulder_pan", -1), "d": ("shoulder_pan", +1),
-    "w": ("shoulder_lift", +1), "s": ("shoulder_lift", -1),
+    "w": ("shoulder_lift", -1), "s": ("shoulder_lift", +1),   # W = raise, S = lower
     "q": ("elbow_flex", -1), "e": ("elbow_flex", +1),
 }
 

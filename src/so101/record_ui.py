@@ -177,7 +177,8 @@ class App:
                              highlightbackground="#888")
         self.pad.pack(fill="x", padx=10, pady=(0, 6))
         self.pad.create_text(12, 35, anchor="w", fill="#aaa",
-                             text="Keyboard+Mouse: move mouse here = wrist  ·  L-click = open  ·  R-click = close")
+                             text="Keyboard+Mouse: move mouse over the camera views (or here) = wrist  ·  "
+                                  "L-click = open  ·  R-click = close")
         self.pad.bind("<Motion>", lambda e: self._route("mouse", e))
         self.pad.bind("<Leave>", lambda e: self._route("leave", e))
         self.pad.bind("<ButtonPress-1>", lambda e: self._route("l", True))
@@ -214,6 +215,14 @@ class App:
             ttk.Label(col, text=name).pack()
             lbl = ttk.Label(col)
             lbl.pack()
+            # The camera view is also a mouse-control surface (keyboard+mouse mode):
+            # move over it = wrist, left/right click = open/close gripper.
+            lbl.bind("<Motion>", lambda e: self._route("mouse", e))
+            lbl.bind("<Leave>", lambda e: self._route("leave", e))
+            lbl.bind("<ButtonPress-1>", lambda e: self._route("l", True))
+            lbl.bind("<ButtonRelease-1>", lambda e: self._route("l", False))
+            lbl.bind("<ButtonPress-3>", lambda e: self._route("r", True))
+            lbl.bind("<ButtonRelease-3>", lambda e: self._route("r", False))
             self.cam_labels[name] = lbl
 
     def _refresh_legend(self):
@@ -221,7 +230,7 @@ class App:
             w.destroy()
         if self.input_mode == "desktop":
             legend = [("A / D", "rotate base"), ("W / S", "raise / lower"),
-                      ("Q / E", "reach in / out"), ("mouse pad", "wrist roll / tilt"),
+                      ("Q / E", "reach in / out"), ("mouse on cams", "wrist roll / tilt"),
                       ("L / R click", "gripper open / close"), ("Enter / Backspace", "save / discard")]
         else:
             legend = [("Left stick L/R", "rotate base"), ("Left stick U/D", "raise / lower arm"),
