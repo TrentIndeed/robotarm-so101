@@ -31,6 +31,9 @@ calibration/
 # Machine-local GUI settings (persisted field values)
 .app_settings.json
 
+# Machine-local reach calibration (point-to-table mapping)
+.ik_calib.json
+
 # Downloaded MediaPipe model bundles (fetched on first vision-teleop run)
 models/
 

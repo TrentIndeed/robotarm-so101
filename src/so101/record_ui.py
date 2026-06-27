@@ -63,9 +63,10 @@ class App:
         self.sim = s.get("rec_backend", "sim") == "sim"
         self.repo_id = s.get("rec_repo", "local/so101_pick_place")
         self.task = s.get("rec_task", DEFAULT_TASK)
-        self.input_mode = s.get("input_mode", "xbox")   # "xbox" or "desktop"
+        self.input_mode = s.get("input_mode", "xbox")   # "xbox", "desktop", or "reach"
 
         self.rng = random.Random()
+        self._joints = load_config("robot")["joints"]
         self.cam_labels: dict = {}
         self._imgs: dict = {}
         self._lock = threading.Lock()
@@ -73,7 +74,13 @@ class App:
         self._shared = self._fresh_shared()
         self._worker = None
         self._save_thread = None
-        self._input = None        # input controller (xbox or desktop), created per session
+        self._input = None        # input controller (xbox/desktop/reach), created per session
+
+        # "Calibrate reach" state (point-to-reach calibration).
+        self._calib_mode = False
+        self._calib_samples: list = []
+        self._desk_cursor = (0.5, 0.5)   # latest cursor over the desk camera (normalized)
+        self._calib_bar = None
 
         root.title("SO-101")
         self._build_menu()
@@ -86,7 +93,7 @@ class App:
     def _fresh_shared(self):
         return {"frames": {}, "status": ("Connecting…", "#a60"), "episodes": 0,
                 "recording": False, "running": True, "connected": False, "cam_names": [],
-                "saving": False}
+                "saving": False, "joints": {}}
 
     def _set(self, **kw):
         with self._lock:
@@ -117,6 +124,8 @@ class App:
                              value="xbox", command=self._change_input)
         setm.add_radiobutton(label="Input: Keyboard + mouse", variable=self._input_var,
                              value="desktop", command=self._change_input)
+        setm.add_radiobutton(label="Input: Point-to-reach (mouse on table)", variable=self._input_var,
+                             value="reach", command=self._change_input)
         setm.add_separator()
         setm.add_command(label="Dataset id…", command=self._change_dataset)
         setm.add_command(label="Task description…", command=self._change_task)
@@ -133,6 +142,7 @@ class App:
         toolm.add_command(label="Find USB port", command=lambda: self._launch_exe("lerobot-find-port", []))
         toolm.add_command(label="Assign motor IDs", command=self._setup_motors)
         toolm.add_command(label="Calibrate arm", command=self._calibrate)
+        toolm.add_command(label="Calibrate reach (point-to-table)…", command=self._calibrate_reach)
         toolm.add_separator()
         toolm.add_command(label="Train a policy on this dataset…", command=self._train)
 
@@ -218,20 +228,26 @@ class App:
             ttk.Label(col, text=name).pack()
             lbl = ttk.Label(col)
             lbl.pack()
-            # The camera view is also a mouse-control surface (keyboard+mouse mode):
-            # move over it = wrist, left/right click = open/close gripper.
-            lbl.bind("<Motion>", lambda e: self._route("mouse", e))
-            lbl.bind("<Leave>", lambda e: self._route("leave", e))
-            lbl.bind("<ButtonPress-1>", lambda e: self._route("l", True))
-            lbl.bind("<ButtonRelease-1>", lambda e: self._route("l", False))
-            lbl.bind("<ButtonPress-3>", lambda e: self._route("r", True))
-            lbl.bind("<ButtonRelease-3>", lambda e: self._route("r", False))
+            # The camera view is a mouse-control surface: in keyboard+mouse mode the
+            # cursor drives the wrist; in point-to-reach mode the cursor over the desk
+            # camera is the reach target. The camera name lets _route tell them apart.
+            lbl.bind("<Motion>", lambda e, n=name: self._route("mouse", e, n))
+            lbl.bind("<Leave>", lambda e, n=name: self._route("leave", e, n))
+            lbl.bind("<ButtonPress-1>", lambda e, n=name: self._route("l", True, n))
+            lbl.bind("<ButtonRelease-1>", lambda e, n=name: self._route("l", False, n))
+            lbl.bind("<ButtonPress-3>", lambda e, n=name: self._route("r", True, n))
+            lbl.bind("<ButtonRelease-3>", lambda e, n=name: self._route("r", False, n))
             self.cam_labels[name] = lbl
 
     def _refresh_legend(self):
         for w in self.cmap.winfo_children():
             w.destroy()
-        if self.input_mode == "desktop":
+        if self.input_mode == "reach":
+            legend = [("cursor on desk cam", "arm reaches that table spot"),
+                      ("scroll", "height fine-tune"), ("L / R click", "gripper open / close"),
+                      ("Enter / Backspace", "save / discard"),
+                      ("Tools ▸ Calibrate reach", "(re)teach the table mapping")]
+        elif self.input_mode == "desktop":
             legend = [("A / D", "rotate base"), ("W / S", "raise / lower"),
                       ("Q/E or scroll", "reach in / out (elbow)"), ("mouse on cams", "wrist roll / tilt"),
                       ("L / R click", "gripper open / close"), ("Enter / Backspace", "save / discard")]
@@ -247,18 +263,47 @@ class App:
             ttk.Label(self.cmap, text=what, foreground="#555").grid(
                 row=row, column=col + 1, sticky="w", padx=(0, 16), pady=1)
 
-    def _route(self, kind, arg):
+    def _desk_cam(self):
+        """Name of the desk (fixed, workspace-facing) camera, used for reach targeting."""
+        return "desk" if "desk" in self.cam_labels else (next(iter(self.cam_labels), None))
+
+    def _route(self, kind, arg, name=None):
         from .desktop_control import DesktopController
-        if not isinstance(self._input, DesktopController):
+        from .ik_reach import ReachController
+        ctrl = self._input
+        desk = self._desk_cam()
+
+        # Track the cursor position over the desk camera (normalized 0..1).
+        if kind == "mouse" and name == desk:
+            w = max(1, arg.widget.winfo_width()); h = max(1, arg.widget.winfo_height())
+            self._desk_cursor = (arg.x / w, arg.y / h)
+
+        # Calibration: a left-click on the desk camera captures a sample.
+        if self._calib_mode:
+            if kind == "l" and arg is True and name == desk:
+                self._capture_calib_point()
             return
-        if kind == "mouse":
-            self._input.on_mouse(arg.x, arg.y, arg.widget.winfo_width(), arg.widget.winfo_height())
-        elif kind == "leave":
-            self._input.on_mouse_leave()
-        elif kind == "scroll":
-            self._input.on_scroll(arg.delta)
-        else:
-            self._input.set_click(kind, arg)
+
+        if isinstance(ctrl, ReachController):
+            if kind == "mouse" and name == desk:
+                ctrl.on_cursor(self._desk_cursor[0], self._desk_cursor[1], True)
+            elif kind == "leave" and name == desk:
+                ctrl.on_cursor(self._desk_cursor[0], self._desk_cursor[1], False)
+            elif kind == "scroll":
+                ctrl.on_scroll(arg.delta)
+            elif kind in ("l", "r"):
+                ctrl.set_click(kind, arg)
+            return
+
+        if isinstance(ctrl, DesktopController):
+            if kind == "mouse":
+                ctrl.on_mouse(arg.x, arg.y, arg.widget.winfo_width(), arg.widget.winfo_height())
+            elif kind == "leave":
+                ctrl.on_mouse_leave()
+            elif kind == "scroll":
+                ctrl.on_scroll(arg.delta)
+            else:
+                ctrl.set_click(kind, arg)
 
     def _on_key(self, event, down):
         k = event.keysym.lower()
@@ -313,6 +358,10 @@ class App:
             from .desktop_control import DesktopController
             self._input = DesktopController()
             self._input.connect()
+        elif self.input_mode == "reach":
+            from .ik_reach import ReachController
+            self._input = ReachController()
+            self._input.connect()
         else:
             self._input = None              # worker creates the Xbox controller
         self._worker = threading.Thread(target=self._run_worker, args=(self.sim, self.repo_id), daemon=True)
@@ -327,8 +376,8 @@ class App:
         try:
             robot = make_robot(sim=sim, use_cameras=True)
             robot.connect()
-            if self.input_mode == "desktop":
-                ctrl = self._input          # DesktopController, created + bound on main thread
+            if self.input_mode in ("desktop", "reach"):
+                ctrl = self._input          # created + bound on the main thread
                 btn, fps = {}, ctrl.cfg["control_hz"]
             else:
                 try:
@@ -393,7 +442,8 @@ class App:
                         af = build_dataset_frame(dataset.features, action, prefix=ACTION)
                         dataset.add_frame({**of, **af, "task": self.task})
 
-                self._set(frames={c: obs[c] for c in cam_names if c in obs})
+                self._set(frames={c: obs[c] for c in cam_names if c in obs},
+                          joints={j: float(obs.get(f"{j}.pos", 0.0)) for j in self._joints})
                 time.sleep(max(0.0, dt - (time.perf_counter() - t0)))
         except Exception as exc:
             self._set(connected=False, status=(f"Connection failed: {exc}", "#c00"))
@@ -563,6 +613,95 @@ class App:
         self.ep_list.delete(0, "end")
         self._refresh_header()
         self._start_worker()
+
+    # -- reach calibration (point-to-table) ----------------------------------
+    def _calibrate_reach(self):
+        if self._calib_mode:
+            return
+        msg = ("Teach the arm where the table is.\n\n"
+               "1. Drive the arm (A/D base, W/S lift, Q/E reach, mouse = wrist) so the\n"
+               "   gripper fingertips touch a spot on the table.\n"
+               "2. LEFT-CLICK that exact spot in the DESK camera to capture it.\n"
+               "3. Repeat for 6+ spots spread out (the four corners + middle work well).\n\n"
+               "Then press Finish. Use the REAL arm with the cameras live.")
+        if not messagebox.askokcancel("Calibrate reach", msg, parent=self.root):
+            return
+        self._calib_samples = []
+        self._calib_restore_mode = self.input_mode
+        self._calib_mode = True
+        # Jog with keyboard+mouse while calibrating.
+        if self.input_mode != "desktop":
+            self.input_mode = "desktop"
+            self._input_var.set("desktop")
+            self._refresh_legend()
+            self._reconnect()
+        self._show_calib_bar()
+
+    def _show_calib_bar(self):
+        if self._calib_bar is not None:
+            self._calib_bar.destroy()
+        bar = tk.Frame(self.root, bg="#243", highlightthickness=1, highlightbackground="#5a5")
+        self._calib_status = tk.StringVar()
+        tk.Label(bar, textvariable=self._calib_status, bg="#243", fg="#dfd",
+                 font=("Segoe UI", 10), justify="left").pack(side="left", padx=10, pady=6)
+        self._calib_finish = tk.Button(bar, text="Finish", command=self._finish_calib, state="disabled")
+        self._calib_finish.pack(side="right", padx=6, pady=6)
+        tk.Button(bar, text="Cancel", command=self._cancel_calib).pack(side="right", padx=2, pady=6)
+        bar.pack(fill="x", padx=10, pady=(0, 4), before=self.cam_box)
+        self._calib_bar = bar
+        self._update_calib_bar()
+
+    def _update_calib_bar(self):
+        if self._calib_bar is None:
+            return
+        n = len(self._calib_samples)
+        self._calib_status.set(
+            "CALIBRATE REACH — touch the table with the gripper, then LEFT-CLICK that spot "
+            f"in the desk camera.    Captured: {n}  (need ≥ 6)")
+        self._calib_finish.configure(state="normal" if n >= 6 else "disabled")
+
+    def _capture_calib_point(self):
+        from .ik_reach import CONTROLLED
+        joints = self._get("joints")
+        if not joints or any(j not in joints for j in CONTROLLED):
+            return
+        u, v = self._desk_cursor
+        self._calib_samples.append(
+            {"u": u, "v": v, "joints": {j: float(joints[j]) for j in CONTROLLED}})
+        self._update_calib_bar()
+
+    def _finish_calib(self):
+        from .ik_reach import fit_calibration, save_calibration
+        try:
+            save_calibration(fit_calibration(self._calib_samples))
+        except Exception as exc:
+            messagebox.showerror("Calibrate reach", f"Could not fit calibration:\n{exc}", parent=self.root)
+            return
+        self._end_calib()
+        self.input_mode = "reach"
+        self._input_var.set("reach")
+        _save_settings({"input_mode": "reach"})
+        self._refresh_legend()
+        self._reconnect()
+        messagebox.showinfo("Reach calibrated",
+                            "Done. Point at the table in the desk camera and the arm reaches there.\n"
+                            "Scroll = height fine-tune, left/right click = gripper.", parent=self.root)
+
+    def _cancel_calib(self):
+        restore = getattr(self, "_calib_restore_mode", self.input_mode)
+        self._end_calib()
+        if self.input_mode != restore:
+            self.input_mode = restore
+            self._input_var.set(restore)
+            self._refresh_legend()
+            self._reconnect()
+
+    def _end_calib(self):
+        self._calib_mode = False
+        self._calib_samples = []
+        if self._calib_bar is not None:
+            self._calib_bar.destroy()
+            self._calib_bar = None
 
     # -- tools (own window/console) ------------------------------------------
     def _launch_module(self, module, args):
