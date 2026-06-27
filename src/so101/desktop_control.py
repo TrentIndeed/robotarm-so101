@@ -94,10 +94,10 @@ class DesktopController:
             dx, dy = self._mdx, self._mdy
             self._mdx = self._mdy = 0.0
         if dx:
-            self.targets["wrist_roll"] = _clip(self.targets["wrist_roll"] + dx * MOUSE_SENS,
+            self.targets["wrist_roll"] = _clip(self.targets["wrist_roll"] - dx * MOUSE_SENS,
                                                JOINT_MIN, JOINT_MAX)
         if dy:
-            self.targets["wrist_flex"] = _clip(self.targets["wrist_flex"] - dy * MOUSE_SENS,
+            self.targets["wrist_flex"] = _clip(self.targets["wrist_flex"] + dy * MOUSE_SENS,
                                                JOINT_MIN, JOINT_MAX)
 
         grip = GRIP_SPEED * self.dt
