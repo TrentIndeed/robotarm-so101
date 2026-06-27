@@ -32,6 +32,7 @@ _KEYS = {
 KEY_SPEED = 60.0       # normalized units/sec while a key is held
 MOUSE_SENS = 0.35      # units of wrist motion per pixel of mouse movement
 GRIP_SPEED = 90.0      # units/sec while a mouse button is held
+SCROLL_STEP = 6.0      # units of elbow motion per mouse-wheel notch
 
 
 class DesktopController:
@@ -48,6 +49,7 @@ class DesktopController:
         self._last = None
         self._lclick = False
         self._rclick = False
+        self._scroll = 0.0
 
     # -- lifecycle (match XboxTeleopController) ------------------------------
     def connect(self):
@@ -83,6 +85,10 @@ class DesktopController:
         elif which == "r":
             self._rclick = down
 
+    def on_scroll(self, delta):
+        with self._lock:
+            self._scroll += delta
+
     # -- per-tick (called on the worker thread) -----------------------------
     def compute_action(self):
         step = KEY_SPEED * self.dt
@@ -92,7 +98,11 @@ class DesktopController:
 
         with self._lock:
             dx, dy = self._mdx, self._mdy
-            self._mdx = self._mdy = 0.0
+            scroll = self._scroll
+            self._mdx = self._mdy = self._scroll = 0.0
+        if scroll:
+            self.targets["elbow_flex"] = _clip(
+                self.targets["elbow_flex"] + (scroll / 120.0) * SCROLL_STEP, JOINT_MIN, JOINT_MAX)
         if dx:
             self.targets["wrist_roll"] = _clip(self.targets["wrist_roll"] - dx * MOUSE_SENS,
                                                JOINT_MIN, JOINT_MAX)
