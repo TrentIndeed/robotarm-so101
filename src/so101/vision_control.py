@@ -43,11 +43,17 @@ ARM_LANDMARKS = {"left": (11, 13, 15), "right": (12, 14, 16)}
 H_WRIST, H_THUMB_TIP, H_INDEX_TIP, H_MIDDLE_MCP = 0, 4, 8, 9
 
 # ---- Tunables: calibrate these live ----------------------------------------
-PAN_RANGE = 0.28      # |wrist_x - shoulder_x| (frac of width) that maps to full pan
-LIFT_RANGE = 0.28     # (shoulder_y - elbow_y) (frac of height) that maps to full lift
+PAN_RANGE = 0.36      # |wrist_x - shoulder_x| (frac of width) for full pan; BIGGER = less sensitive
+LIFT_RANGE = 0.36     # (shoulder_y - elbow_y) (frac of height) for full lift; bigger = less sensitive
 ELBOW_MIN_DEG, ELBOW_MAX_DEG = 45.0, 165.0   # your elbow angle -> robot elbow extremes
 PINCH_CLOSED, PINCH_OPEN = 0.35, 1.1         # thumb-index dist / hand-scale -> grip
-EMA = 0.30            # smoothing factor (higher = snappier, lower = smoother)
+
+# Motion feel: your arm pose is a GOAL the robot EASES toward (rate-limited), like a
+# controller — it does not snap to match. Tune for calmness:
+MAX_SPEED = 40.0      # normalized units/sec the arm eases toward the goal (lower = slower/calmer)
+GOAL_EMA = 0.5        # smoothing on the noisy tracked goal (lower = smoother, laggier)
+DEADBAND = 3.0        # ignore goal-vs-target errors smaller than this (kills micro-jitter)
+GRIPPER_EMA = 0.4     # gripper responsiveness from pinch
 VIS_THRESH = 0.6      # min landmark visibility to trust the arm (puppet mode)
 # ----------------------------------------------------------------------------
 
@@ -72,7 +78,7 @@ def lin_map(v, in_lo, in_hi, out_lo, out_hi) -> float:
     return out_lo + t * (out_hi - out_lo)
 
 
-def _ema(old: float, new: float, a: float = EMA) -> float:
+def _ema(old: float, new: float, a: float) -> float:
     return (1 - a) * old + a * new
 
 
@@ -93,8 +99,7 @@ class VisionController:
         self.pose = None
         self.hands = None
         self.engaged = False          # clutch (start disengaged for safety)
-        self._ref = None              # reference raw values captured on engage
-        self._base = None             # robot targets captured on engage
+        self._goal: dict[str, float] = {}   # smoothed pose goal the arm eases toward
 
     @property
     def _arm_idx(self):
@@ -201,30 +206,35 @@ class VisionController:
         return (raw or None), mode, (frame, pres, hres)
 
     def _apply(self, raw):
-        """Blend raw targets into self.targets (relative-on-engage + EMA)."""
+        """Ease the robot toward your arm's pose like a controller: smooth the noisy
+        goal, then slew each joint toward it at a capped speed (no snapping). A small
+        deadband kills residual jitter. Clutch off = hold."""
         if not self.engaged or raw is None:
-            self._ref = None
             return
-        # Capture references on the engage edge so there's no jump.
-        if self._ref is None:
-            self._ref = dict(raw)
-            self._base = {j: self.targets[j] for j in VISION_JOINTS}
+        max_step = MAX_SPEED * self.dt
         for j in VISION_JOINTS:
-            if j in raw and j in self._ref:
-                tgt = self._base[j] + (raw[j] - self._ref[j])    # relative motion
-                self.targets[j] = _clip(_ema(self.targets[j], tgt), JOINT_MIN, JOINT_MAX)
-        if "gripper" in raw:                                      # gripper is absolute
-            self.targets["gripper"] = _clip(_ema(self.targets["gripper"], raw["gripper"]),
-                                            GRIPPER_MIN, GRIPPER_MAX)
+            if j not in raw:
+                continue
+            goal = _ema(self._goal.get(j, self.targets[j]), raw[j], GOAL_EMA)
+            self._goal[j] = goal
+            err = goal - self.targets[j]
+            if abs(err) < DEADBAND:
+                continue
+            step = max(-max_step, min(max_step, err))           # rate-limit toward goal
+            self.targets[j] = _clip(self.targets[j] + step, JOINT_MIN, JOINT_MAX)
+        if "gripper" in raw:                                     # gripper stays responsive
+            self.targets["gripper"] = _clip(
+                _ema(self.targets["gripper"], raw["gripper"], GRIPPER_EMA),
+                GRIPPER_MIN, GRIPPER_MAX)
 
     def toggle_clutch(self) -> None:
         self.engaged = not self.engaged
-        self._ref = None
+        self._goal = {}     # re-seed the eased goal from the current pose on re-engage
         print("Clutch", "ENGAGED" if self.engaged else "disengaged")
 
     def swap_arm(self) -> None:
         self.arm = "right" if self.arm == "left" else "left"
-        self._ref = None
+        self._goal = {}
         print("Tracking", self.arm, "arm")
 
     def _draw(self, overlay, mode):
