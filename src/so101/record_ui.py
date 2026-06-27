@@ -21,6 +21,7 @@ import os
 import random
 import subprocess
 import sys
+import time
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
@@ -269,6 +270,7 @@ class App:
     def _tick(self, gen):
         if gen != self._gen or not self.connected or not self.root.winfo_exists():
             return
+        t0 = time.perf_counter()
         obs = self.robot.get_observation()
         if self.ctrl is not None:
             action = self.ctrl.compute_action()
@@ -284,10 +286,11 @@ class App:
                 af = self._build_frame(self.dataset.features, action, prefix=self._ACTION)
                 self.dataset.add_frame({**of, **af, "task": self.task})
 
-        self._frame_n += 1
-        if self._frame_n % 2 == 0:          # ~15 fps display is plenty
-            self._show_cameras(obs)
-        self.root.after(int(1000 / self.fps), lambda: self._tick(gen))
+        self._show_cameras(obs)
+        # Schedule the next frame accounting for the work just done, so the display
+        # actually runs near `fps` instead of fps minus the per-frame work time.
+        delay = max(1, int(1000 / self.fps - (time.perf_counter() - t0) * 1000))
+        self.root.after(delay, lambda: self._tick(gen))
 
     def _show_cameras(self, obs):
         for name, lbl in self.cam_labels.items():
