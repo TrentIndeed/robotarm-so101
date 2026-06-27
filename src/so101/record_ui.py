@@ -54,23 +54,32 @@ class RecorderUI:
         self.robot.connect()
         self.ctrl.connect()
 
-        features = {
-            **hw_to_dataset_features(self.robot.observation_features, OBS_STR, use_video=True),
-            **hw_to_dataset_features(self.robot.action_features, ACTION),
-        }
+        # Resume an existing dataset (so a re-launch APPENDS instead of crashing on
+        # FileExistsError); otherwise create a fresh one.
         self.root_dir = REPO_ROOT / "data" / repo_id.replace("/", "__")
-        self.dataset = LeRobotDataset.create(
-            repo_id=repo_id, fps=self.fps, features=features, root=self.root_dir,
-            robot_type=self.robot.name, use_videos=True)
+        if self.root_dir.exists():
+            self.dataset = LeRobotDataset.resume(repo_id=repo_id, root=self.root_dir)
+            self.episodes = self.dataset.num_episodes
+        else:
+            features = {
+                **hw_to_dataset_features(self.robot.observation_features, OBS_STR, use_video=True),
+                **hw_to_dataset_features(self.robot.action_features, ACTION),
+            }
+            self.dataset = LeRobotDataset.create(
+                repo_id=repo_id, fps=self.fps, features=features, root=self.root_dir,
+                robot_type=self.robot.name, use_videos=True)
+            self.episodes = 0
 
         self.recording = False
-        self.episodes = 0
         self.rng = random.Random()
         self.n_steps = max(1, round((1.0 / self.fps) / self.robot.model.opt.timestep)) if sim else 0
         self._prev_btn: dict[int, bool] = {}
         self._imgs: dict[str, ImageTk.PhotoImage] = {}
 
         self._build_ui(repo_id)
+        self.count.set(f"Saved episodes: {self.episodes}")
+        for i in range(self.episodes):                 # preload prior episodes to watch
+            self.ep_list.insert("end", f"Episode {i}")
         if sim:
             _reset_sim_block(self.robot, self.rng)
         self.ctrl.seed_targets(self.robot.get_observation())
