@@ -210,13 +210,10 @@ def _build_panel(frames, viewport):
     return [(mujoco.MjrRect(W - panel_w, 0, panel_w, H), rgb)]
 
 
-def mirror_loop(use_vision: bool = False, cam_index: int = 2) -> None:
-    """Unified teleop UI: drive the real arm with a 3D MuJoCo twin and the live camera
-    feeds (robot gripper/desk + your operator cam if vision is on) overlaid on the right.
-
-    Control sources are whatever is available — Xbox controller and/or webcam vision.
-    Keys in the window: 'v' toggle control source, SPACE vision clutch, 'a' swap arm.
-    """
+def mirror_loop() -> None:
+    """Teleop UI: drive the real arm with the Xbox controller, a 3D MuJoCo twin, the
+    gripper + desk camera feeds on the right, and the MuJoCo menu/settings on the left.
+    All serial I/O stays on this (main) thread — no key callbacks touching the bus."""
     import mujoco.viewer
 
     from .robot import make_robot
@@ -225,65 +222,26 @@ def mirror_loop(use_vision: bool = False, cam_index: int = 2) -> None:
     # Joints-only robot -> connects fast and reliably (no camera warmup to hang on).
     real = make_robot(sim=False, use_cameras=False)
     sim = SimRobot(use_cameras=False)
-    caps = _open_cv_cameras()   # robot cameras, best-effort
-
-    # Control sources: connect whichever are available.
-    sources = {}
-    try:
-        xb = XboxTeleopController()
-        xb.connect()
-        sources["xbox"] = xb
-    except Exception as exc:
-        print(f"(no Xbox controller: {exc})")
-    vision = None
-    if use_vision:
-        from .vision_control import VisionController
-        vision = VisionController(cam_index=cam_index, show_window=False)
-        vision.connect()
-        sources["vision"] = vision
-    if not sources:
-        raise RuntimeError("No control source — connect a controller or pass --vision.")
+    ctrl = XboxTeleopController()
+    caps = _open_cv_cameras()   # robot cameras (threaded, auto-recovering)
 
     real.connect()
-    obs0 = real.get_observation()
-    for s in sources.values():
-        s.seed_targets(obs0)
-    state = {"active": "vision" if "vision" in sources else "xbox"}
-
-    def on_key(keycode):
-        if keycode in (ord("V"), ord("v")) and len(sources) > 1:
-            state["active"] = "xbox" if state["active"] == "vision" else "vision"
-            sources[state["active"]].seed_targets(real.get_observation())  # no jump
-            print("Control source:", state["active"])
-        elif vision is not None and keycode == 32:                    # SPACE
-            vision.toggle_clutch()
-        elif vision is not None and keycode in (ord("A"), ord("a")):
-            vision.swap_arm()
-
-    print(f"Mirror UI — control: {state['active']}. Keys: v=toggle control, "
-          "SPACE=vision clutch, a=swap arm. Ctrl+C to stop.")
-    dt = next(iter(sources.values())).dt
+    ctrl.connect()
+    ctrl.seed_targets(real.get_observation())
+    print("Mirror UI — Xbox control. Back/View = hold. Ctrl+C or close the window to stop.")
+    dt = ctrl.dt
     try:
         with mujoco.viewer.launch_passive(
-            sim.model, sim.data, key_callback=on_key, show_left_ui=True, show_right_ui=False
+            sim.model, sim.data, show_left_ui=True, show_right_ui=False
         ) as viewer:
             while viewer.is_running():
                 t0 = time.perf_counter()
-
-                # Always run vision (if present) so the operator panel stays live;
-                # drive the arm from whichever source is active.
-                vis_action = vision.compute_action() if vision is not None else None
-                action = vis_action if state["active"] == "vision" else sources["xbox"].compute_action()
-                real.send_action(action)
+                real.send_action(ctrl.compute_action())
                 sim.set_pose(real.get_observation())
 
                 vp = viewer.viewport          # None during teardown -> skip overlays
                 if vp is not None:
-                    frames = _read_caps(caps)
-                    if vision is not None and vision.last_frame is not None:
-                        frames.append((f"you [{vision.arm}] {state['active'].upper()}",
-                                       vision.last_frame))
-                    overlays = _build_panel(frames, vp)
+                    overlays = _build_panel(_read_caps(caps), vp)
                     if overlays:
                         viewer.set_images(overlays)
                 viewer.sync()
@@ -293,8 +251,7 @@ def mirror_loop(use_vision: bool = False, cam_index: int = 2) -> None:
     finally:
         for stream in caps:
             stream.release()
-        for s in sources.values():
-            s.disconnect()
+        ctrl.disconnect()
         real.disconnect()
 
 
@@ -338,10 +295,10 @@ def main() -> None:
 
     if args.debug:
         debug_loop()
-    elif args.mirror:
-        mirror_loop(use_vision=args.vision, cam_index=args.cam)
     elif args.vision:
         vision_loop(args.cam)
+    elif args.mirror:
+        mirror_loop()
     else:
         teleop_loop(with_cameras=args.cameras)
 
