@@ -81,18 +81,25 @@ class _CameraStream:
     or, after a Windows index reshuffle, pulling some OTHER camera's frames."""
 
     def __init__(self, name, index, width, height, rotation):
-        import cv2
-
         self.name = name
+        self.index = int(index)
+        self.width = width
+        self.height = height
         self.rot = rotation
         self._latest = None
         self._run = True
         self._lock = threading.Lock()
-        self._cap = cv2.VideoCapture(int(index), cv2.CAP_DSHOW)
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self._cap = self._open()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
+
+    def _open(self):
+        import cv2
+
+        cap = cv2.VideoCapture(self.index, cv2.CAP_DSHOW)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        return cap
 
     def _loop(self):
         import cv2
@@ -109,12 +116,21 @@ class _CameraStream:
                     frame = cv2.rotate(frame, self.rot)
                 with self._lock:
                     self._latest = frame
-            else:
-                fails += 1
-                if fails >= 15:                  # camera gone -> stop showing stale frames
-                    with self._lock:
-                        self._latest = None
-                time.sleep(0.1)                  # back off; don't spin on a dead device
+                continue
+
+            fails += 1
+            if fails >= 5:                       # gone -> show placeholder, not stale frames
+                with self._lock:
+                    self._latest = None
+            # Reopen periodically so a brief disconnect recovers on its own: a stale
+            # VideoCapture handle never reads again, but a fresh one (like a restart) does.
+            if fails % 10 == 0:
+                try:
+                    self._cap.release()
+                except Exception:
+                    pass
+                self._cap = self._open()
+            time.sleep(0.1)
 
     def read(self):
         with self._lock:
