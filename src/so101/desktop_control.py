@@ -30,7 +30,7 @@ _KEYS = {
 
 # ---- tunables ----
 KEY_SPEED = 60.0       # normalized units/sec while a key is held
-WRIST_SPEED = 70.0     # units/sec wrist motion at full cursor offset from the view center
+WRIST_SPEED = 42.0     # units/sec wrist motion at full cursor offset from the view center
 WRIST_DEADZONE = 0.12  # central neutral zone (fraction of half-width) where the wrist holds
 GRIP_SPEED = 90.0      # units/sec while a mouse button is held
 SCROLL_STEP = 6.0      # units of elbow motion per mouse-wheel notch
