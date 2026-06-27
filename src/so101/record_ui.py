@@ -160,6 +160,21 @@ class App:
         self.count = tk.StringVar(value="Saved episodes: 0")
         ttk.Label(self.root, textvariable=self.count, font=("Segoe UI", 12)).pack(pady=2)
 
+        cmap = ttk.LabelFrame(self.root, text="Controls — what each input moves")
+        cmap.pack(fill="x", padx=10, pady=(2, 6))
+        legend = [
+            ("Left stick L/R", "rotate base"), ("Left stick U/D", "raise / lower arm"),
+            ("Right stick L/R", "twist wrist"), ("Right stick U/D", "reach in / out"),
+            ("LT / RT", "wrist tilt down / up"), ("A / B", "open / close gripper"),
+            ("Back/View", "hold (e-stop)"), ("Start / X", "save take / discard"),
+        ]
+        for i, (ctrl, what) in enumerate(legend):
+            row, col = i // 2, (i % 2) * 2
+            ttk.Label(cmap, text=ctrl, font=("Consolas", 9, "bold")).grid(
+                row=row, column=col, sticky="w", padx=(8, 4), pady=1)
+            ttk.Label(cmap, text=what, foreground="#555").grid(
+                row=row, column=col + 1, sticky="w", padx=(0, 16), pady=1)
+
         watch = ttk.LabelFrame(self.root, text="Watch demos")
         watch.pack(fill="both", expand=True, padx=10, pady=8)
         self.ep_list = tk.Listbox(watch, height=6)
