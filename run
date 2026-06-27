@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# One-command launcher for the SO-101 app — opens the GUI menu with the project venv.
+# From the repo root just run:   ./run
+set -e
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="$DIR/.venv/Scripts/python.exe"          # Windows venv layout (Git Bash)
+[ -x "$PY" ] || PY="$DIR/.venv/bin/python"  # POSIX venv layout
+if [ ! -x "$PY" ]; then
+  echo "No venv yet. Set it up first:" >&2
+  echo "  py -3.12 -m venv .venv && source .venv/Scripts/activate && pip install -r requirements.txt && pip install -e ." >&2
+  exit 1
+fi
+exec "$PY" -m so101 "$@"
