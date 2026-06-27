@@ -13,6 +13,7 @@ episodes with ``python -m so101.record``.
 from __future__ import annotations
 
 import argparse
+import threading
 import time
 
 from .controller import XboxTeleopController
@@ -73,39 +74,95 @@ def teleop_loop(with_cameras: bool = False) -> None:
         robot.disconnect()
 
 
-def _open_cv_cameras():
-    """Open the configured cameras directly via cv2 (display only, decoupled from the
-    robot). A flaky camera then just shows black instead of hanging the robot's
-    camera warmup. Returns a list of (name, VideoCapture, cv2_rotate_code)."""
-    import cv2
+class _CameraStream:
+    """Background-threaded camera reader. The control loop never calls cap.read()
+    directly, so a slow/disconnected camera can't stall it or feed corrupt frames —
+    a dead camera just yields None (-> a 'no signal' placeholder) instead of blocking
+    or, after a Windows index reshuffle, pulling some OTHER camera's frames."""
 
+    def __init__(self, name, index, width, height, rotation):
+        import cv2
+
+        self.name = name
+        self.rot = rotation
+        self._latest = None
+        self._run = True
+        self._lock = threading.Lock()
+        self._cap = cv2.VideoCapture(int(index), cv2.CAP_DSHOW)
+        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def _loop(self):
+        import cv2
+
+        fails = 0
+        while self._run:
+            try:
+                ok, frame = self._cap.read()
+            except Exception:
+                ok, frame = False, None
+            if ok and frame is not None:
+                fails = 0
+                if self.rot is not None:
+                    frame = cv2.rotate(frame, self.rot)
+                with self._lock:
+                    self._latest = frame
+            else:
+                fails += 1
+                if fails >= 15:                  # camera gone -> stop showing stale frames
+                    with self._lock:
+                        self._latest = None
+                time.sleep(0.1)                  # back off; don't spin on a dead device
+
+    def read(self):
+        with self._lock:
+            return self._latest
+
+    def release(self):
+        self._run = False
+        try:
+            self._cap.release()
+        except Exception:
+            pass
+
+
+def _open_cv_cameras():
+    """Open the configured cameras as background-threaded streams (display only,
+    decoupled from the robot AND from the control loop)."""
     from . import load_config
     from .cameras import _cv2_rotate_code
 
-    caps = []
+    streams = []
     for name, c in load_config("cameras")["cameras"].items():
-        cap = cv2.VideoCapture(int(c["index_or_path"]), cv2.CAP_DSHOW)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, c["width"])
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, c["height"])
-        caps.append((name, cap, _cv2_rotate_code(c.get("rotation"))))
-    return caps
+        streams.append(_CameraStream(name, c["index_or_path"], c["width"], c["height"],
+                                     _cv2_rotate_code(c.get("rotation"))))
+    return streams
 
 
 _MARGIN = 14  # px padding around each camera inside the panel
 
 
-def _read_caps(caps):
-    """Read each capture -> list of (name, BGR frame), applying rotation."""
+def _placeholder(name):
+    """A black 'no signal' tile for a disconnected camera (keeps the slot, never
+    shows another camera's frames)."""
     import cv2
+    import numpy as np
 
+    img = np.zeros((480, 640, 3), np.uint8)
+    cv2.putText(img, f"{name}: no signal", (40, 250),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (80, 80, 220), 2)
+    return img
+
+
+def _read_caps(streams):
+    """Grab the latest frame from each stream (non-blocking) -> list of (name, BGR
+    frame), substituting a placeholder for any disconnected camera."""
     frames = []
-    for name, cap, rot in caps:
-        ok, frame = cap.read()
-        if not ok or frame is None:
-            continue
-        if rot is not None:
-            frame = cv2.rotate(frame, rot)
-        frames.append((name, frame))
+    for s in streams:
+        frame = s.read()
+        frames.append((s.name, frame if frame is not None else _placeholder(s.name)))
     return frames
 
 
@@ -218,8 +275,8 @@ def mirror_loop(use_vision: bool = False, cam_index: int = 2) -> None:
     except KeyboardInterrupt:
         print("\nStopping.")
     finally:
-        for _name, cap, _rot in caps:
-            cap.release()
+        for stream in caps:
+            stream.release()
         for s in sources.values():
             s.disconnect()
         real.disconnect()
