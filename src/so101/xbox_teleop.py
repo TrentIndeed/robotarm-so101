@@ -91,15 +91,17 @@ def _open_cv_cameras():
     return caps
 
 
-_MARGIN = 12  # px around camera tiles
+_MARGIN = 14  # px padding around each camera inside the panel
 
 
 def _camera_overlays(caps, viewport):
-    """Build (MjrRect, RGB) overlays filling the RIGHT side of the viewer: the camera
-    feeds stacked, each sized as large as fits (4:3 kept) so the layout is sim on the
-    left, big cameras on the right. The viewer flips vertically itself -> pass top-down RGB."""
+    """Composite the camera feeds into ONE solid panel covering the right side of the
+    viewer (black backing, so the 3D sim never shows through between/around them), with
+    each feed aspect-correct and as large as fits. Returns a single (MjrRect, RGB).
+    The viewer flips vertically itself -> pass a top-down image."""
     import cv2
     import mujoco
+    import numpy as np
 
     frames = []
     for name, cap, rot in caps:
@@ -109,23 +111,25 @@ def _camera_overlays(caps, viewport):
         if rot is not None:
             frame = cv2.rotate(frame, rot)
         frames.append((name, frame))
-    if not frames or viewport.width < 2 or viewport.height < 2:
+    W, H = viewport.width, viewport.height
+    if not frames or W < 2 or H < 2:
         return []
 
     n, m = len(frames), _MARGIN
-    th = max(1, (viewport.height - (n + 1) * m) // n)   # n tiles stacked, full height
-    tw = min(round(th * 4 / 3), viewport.width // 2)    # keep 4:3, never past half-width
-    th = min(th, round(tw * 3 / 4))                     # re-fit height if width-capped
-
-    overlays = []
+    panel_w = min(W // 2, 820)            # right-side panel width (keep room for the sim)
+    panel = np.zeros((H, panel_w, 3), np.uint8)
+    cell_h = H // n
     for k, (name, frame) in enumerate(frames):
-        f = cv2.resize(frame, (tw, th))
-        cv2.putText(f, name, (10, 34), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
-        rgb = cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
-        left = max(0, viewport.width - tw - m)
-        bottom = max(0, viewport.height - m - (k + 1) * th - k * m)
-        overlays.append((mujoco.MjrRect(left, bottom, tw, th), rgb))
-    return overlays
+        fh, fw = frame.shape[:2]
+        scale = min((panel_w - 2 * m) / fw, (cell_h - 2 * m) / fh)
+        tw, th = max(1, int(fw * scale)), max(1, int(fh * scale))
+        tile = cv2.resize(frame, (tw, th))
+        cv2.putText(tile, name, (8, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+        y0 = k * cell_h + (cell_h - th) // 2       # centered in its cell, top-down
+        x0 = (panel_w - tw) // 2
+        panel[y0:y0 + th, x0:x0 + tw] = tile
+    rgb = cv2.cvtColor(panel, cv2.COLOR_BGR2RGB)
+    return [(mujoco.MjrRect(W - panel_w, 0, panel_w, H), rgb)]
 
 
 def mirror_loop() -> None:
@@ -149,9 +153,10 @@ def mirror_loop() -> None:
           "Ctrl+C or close the window to stop.")
     dt = ctrl.dt
     try:
-        # Hide MuJoCo's left/right menu panels for a clean view.
+        # Left menu visible (settings); right panel off so the camera panel owns the
+        # right side. Toggle either at runtime with Tab / Shift+Tab.
         with mujoco.viewer.launch_passive(
-            sim.model, sim.data, show_left_ui=False, show_right_ui=False
+            sim.model, sim.data, show_left_ui=True, show_right_ui=False
         ) as viewer:
             while viewer.is_running():
                 t0 = time.perf_counter()
