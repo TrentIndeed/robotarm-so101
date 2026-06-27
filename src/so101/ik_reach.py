@@ -40,9 +40,10 @@ CONTROLLED = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex"]
 CALIB_PATH = REPO_ROOT / ".ik_calib.json"
 
 # ---- tunables ----
-EASE = 0.18         # fraction of the remaining gap closed per tick (smooth follow)
-SCROLL_STEP = 5.0   # elbow units per wheel notch (manual height fine-tune)
-GRIP_SPEED = 90.0   # gripper units/sec while a mouse button is held
+EASE = 0.18           # fraction of the remaining gap closed per tick (smooth follow)
+REACH_MAX_SPEED = 38.0  # top speed cap (units/sec) for EVERY joint that follows the cursor
+SCROLL_STEP = 5.0     # elbow units per wheel notch (manual height fine-tune)
+GRIP_SPEED = 90.0     # gripper units/sec while a mouse button is held
 
 
 def _features(u: float, v: float, degree: int) -> np.ndarray:
@@ -154,12 +155,16 @@ class ReachController:
             scroll = self._scroll
             self._scroll = 0.0
 
-        # Cursor on the table -> ease the reach joints toward the fitted pose.
+        # Cursor on the table -> ease the reach joints toward the fitted pose, but cap
+        # every joint's per-tick move so the whole arm never lunges (top-speed limit).
         if active and self.calib is not None:
             goal = eval_calibration(self.calib, u, v)
+            max_step = REACH_MAX_SPEED * self.dt
             for j, val in goal.items():
                 val = _clip(val, JOINT_MIN, JOINT_MAX)
-                self.targets[j] += (val - self.targets[j]) * EASE
+                delta = (val - self.targets[j]) * EASE
+                delta = max(-max_step, min(max_step, delta))
+                self.targets[j] += delta
 
         # Scroll = manual height fine-tune (nudges the elbow).
         if scroll:
