@@ -323,11 +323,12 @@ class App:
             features = {**hw_to_dataset_features(robot.observation_features, OBS_STR, use_video=True),
                         **hw_to_dataset_features(robot.action_features, ACTION)}
             return LeRobotDataset.create(repo_id=repo_id, fps=fps, features=features, root=root_dir,
-                                         robot_type=robot.name, use_videos=True, vcodec=VCODEC)
+                                         robot_type=robot.name, use_videos=True, vcodec=VCODEC,
+                                         streaming_encoding=True)
         if not root_dir.exists():
             return _create(), 0
         try:
-            ds = LeRobotDataset.resume(repo_id=repo_id, root=root_dir)
+            ds = LeRobotDataset.resume(repo_id=repo_id, root=root_dir, streaming_encoding=True)
             return ds, ds.num_episodes
         except Exception:
             ep_dir = root_dir / "meta" / "episodes"
