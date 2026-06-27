@@ -37,8 +37,8 @@ _MODELS = {
         "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
 }
 
-# Pose landmark indices (MediaPipe) — right arm.
-R_SHOULDER, R_ELBOW, R_WRIST = 12, 14, 16
+# Pose landmark indices (MediaPipe), by side: (shoulder, elbow, wrist).
+ARM_LANDMARKS = {"left": (11, 13, 15), "right": (12, 14, 16)}
 # Hand landmark indices.
 H_WRIST, H_THUMB_TIP, H_INDEX_TIP, H_MIDDLE_MCP = 0, 4, 8, 9
 
@@ -79,12 +79,15 @@ def _ema(old: float, new: float, a: float = EMA) -> float:
 class VisionController:
     """Webcam arm/hand tracking -> normalized SO-101 joint targets."""
 
-    def __init__(self, cam_index: int = 2):
+    def __init__(self, cam_index: int = 2, show_window: bool = True, arm: str = "left"):
         self.cfg = load_config("teleop")
         self.dt = 1.0 / self.cfg["control_hz"]
         self.cam_index = cam_index
+        self.show_window = show_window          # own cv2 window (standalone) vs headless
+        self.arm = arm if arm in ARM_LANDMARKS else "left"
         self._joints = load_config("robot")["joints"]
         self.targets: dict[str, float] = {}
+        self.last_frame = None                  # latest annotated frame (for embedding)
 
         self.cap = None
         self.pose = None
@@ -92,6 +95,10 @@ class VisionController:
         self.engaged = False          # clutch (start disengaged for safety)
         self._ref = None              # reference raw values captured on engage
         self._base = None             # robot targets captured on engage
+
+    @property
+    def _arm_idx(self):
+        return ARM_LANDMARKS[self.arm]
 
     # -- lifecycle (matches XboxTeleopController) ----------------------------
     def connect(self) -> None:
@@ -140,10 +147,14 @@ class VisionController:
             frame = cv2.flip(frame, 1)   # mirror so motion feels natural
             raw, mode, overlay = self._track(frame)
             self._apply(raw)
-            self._draw(overlay, mode)
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord(" "):
-                self._toggle_clutch()
+            self.last_frame = self._draw(overlay, mode)   # annotated frame (BGR)
+            if self.show_window:
+                cv2.imshow("so101 vision control", self.last_frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord(" "):
+                    self.toggle_clutch()
+                elif key in (ord("a"), ord("A")):
+                    self.swap_arm()
         return {f"{j}.pos": v for j, v in self.targets.items()}
 
     # -- internals -----------------------------------------------------------
@@ -166,17 +177,18 @@ class VisionController:
             pinch = _dist(hl[H_THUMB_TIP], hl[H_INDEX_TIP]) / scale
             raw["gripper"] = lin_map(pinch, PINCH_CLOSED, PINCH_OPEN, GRIPPER_MIN, GRIPPER_MAX)
 
-        # Arm-puppet if the right arm is reliably visible, else hand-pointer.
+        # Arm-puppet if the chosen arm is reliably visible, else hand-pointer.
+        si, ei, wi = self._arm_idx
         arm_ok = (pres.pose_landmarks and pres.pose_world_landmarks
-                  and _visible(pres.pose_landmarks[0], (R_SHOULDER, R_ELBOW, R_WRIST), VIS_THRESH))
+                  and _visible(pres.pose_landmarks[0], (si, ei, wi), VIS_THRESH))
         if arm_ok:
-            mode = "PUPPET"
+            mode = f"PUPPET ({self.arm})"
             lm = pres.pose_landmarks[0]
-            sh, el, wr = lm[R_SHOULDER], lm[R_ELBOW], lm[R_WRIST]
+            sh, el, wr = lm[si], lm[ei], lm[wi]
             raw["shoulder_pan"] = lin_map(wr.x - sh.x, -PAN_RANGE, PAN_RANGE, JOINT_MIN, JOINT_MAX)
             raw["shoulder_lift"] = lin_map(sh.y - el.y, -LIFT_RANGE, LIFT_RANGE, JOINT_MIN, JOINT_MAX)
             wl = pres.pose_world_landmarks[0]
-            ang = angle_deg(_xyz(wl[R_SHOULDER]), _xyz(wl[R_ELBOW]), _xyz(wl[R_WRIST]))
+            ang = angle_deg(_xyz(wl[si]), _xyz(wl[ei]), _xyz(wl[wi]))
             raw["elbow_flex"] = lin_map(ang, ELBOW_MIN_DEG, ELBOW_MAX_DEG, JOINT_MIN, JOINT_MAX)
         elif hres.hand_landmarks:
             mode = "POINTER"
@@ -205,20 +217,25 @@ class VisionController:
             self.targets["gripper"] = _clip(_ema(self.targets["gripper"], raw["gripper"]),
                                             GRIPPER_MIN, GRIPPER_MAX)
 
-    def _toggle_clutch(self) -> None:
+    def toggle_clutch(self) -> None:
         self.engaged = not self.engaged
         self._ref = None
         print("Clutch", "ENGAGED" if self.engaged else "disengaged")
+
+    def swap_arm(self) -> None:
+        self.arm = "right" if self.arm == "left" else "left"
+        self._ref = None
+        print("Tracking", self.arm, "arm")
 
     def _draw(self, overlay, mode):
         import cv2
 
         frame, pres, hres = overlay
         h, w = frame.shape[:2]
-        # Arm skeleton.
+        # Arm skeleton (the tracked side).
         if pres.pose_landmarks:
             lm = pres.pose_landmarks[0]
-            pts = [(int(lm[i].x * w), int(lm[i].y * h)) for i in (R_SHOULDER, R_ELBOW, R_WRIST)]
+            pts = [(int(lm[i].x * w), int(lm[i].y * h)) for i in self._arm_idx]
             for i in range(len(pts) - 1):
                 cv2.line(frame, pts[i], pts[i + 1], (0, 220, 0), 3)
             for p in pts:
@@ -243,7 +260,7 @@ class VisionController:
             cv2.rectangle(frame, (10, y), (210, y + 16), (60, 60, 60), -1)
             cv2.rectangle(frame, (10, y), (10 + int(200 * frac), y + 16), (0, 200, 0), -1)
             cv2.putText(frame, j, (220, y + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        cv2.imshow("so101 vision control", frame)
+        return frame
 
 
 # ---- module helpers --------------------------------------------------------

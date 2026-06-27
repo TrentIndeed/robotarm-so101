@@ -244,21 +244,27 @@ class Launcher:
         ttk.Separator(f, orient="horizontal").grid(row=2, column=0, columnspan=5, sticky="we", pady=4)
 
         self.teleop_cams = self._var("teleop_cams", False, tk.BooleanVar)
-        ttk.Button(f, text="Teleoperate", command=self._do_teleop).grid(row=3, column=0, **PAD)
+        ttk.Button(f, text="Teleoperate (pad)", command=self._do_teleop).grid(row=3, column=0, **PAD)
         ttk.Checkbutton(f, text="with cameras", variable=self.teleop_cams).grid(
             row=3, column=1, sticky="w", **PAD)
-        ttk.Button(f, text="Teleoperate + 3D view",
-                   command=lambda: self._launch_module("so101.xbox_teleop", ["--mirror"], "teleop + 3D mirror")
-                   ).grid(row=3, column=2, **PAD)
         ttk.Button(f, text="Controller debug",
                    command=lambda: self._launch_module("so101.xbox_teleop", ["--debug"], "controller debug")
-                   ).grid(row=3, column=3, **PAD)
+                   ).grid(row=3, column=2, columnspan=2, **PAD)
 
-        ttk.Label(f, text="Webcam:").grid(row=4, column=0, sticky="w", **PAD)
+        # 3D mirror UI with a control-mode toggle (controller vs webcam vision).
+        self.mirror_mode = self._var("mirror_mode", "controller")
         self.vision_cam = self._var("vision_cam", "2")
-        ttk.Entry(f, textvariable=self.vision_cam, width=4).grid(row=4, column=1, sticky="w", **PAD)
-        ttk.Button(f, text="Vision control (track my arm)", command=self._do_vision).grid(
-            row=4, column=2, columnspan=2, sticky="we", **PAD)
+        ttk.Label(f, text="3D view control:").grid(row=4, column=0, sticky="w", **PAD)
+        ttk.Radiobutton(f, text="Controller", variable=self.mirror_mode, value="controller").grid(
+            row=4, column=1, sticky="w", **PAD)
+        ttk.Radiobutton(f, text="Vision", variable=self.mirror_mode, value="vision").grid(
+            row=4, column=2, sticky="w", **PAD)
+        ttk.Label(f, text="webcam:").grid(row=4, column=3, sticky="e", **PAD)
+        ttk.Entry(f, textvariable=self.vision_cam, width=4).grid(row=4, column=4, sticky="w", **PAD)
+        ttk.Button(f, text="Launch 3D mirror", command=self._do_mirror).grid(
+            row=5, column=0, columnspan=2, sticky="we", **PAD)
+        ttk.Button(f, text="Vision only (no sim)", command=self._do_vision).grid(
+            row=5, column=2, columnspan=3, sticky="we", **PAD)
 
     def _save_port(self) -> None:
         # Rewrite just the `port:` line in config/robot.yaml (preserves comments).
@@ -277,6 +283,12 @@ class Launcher:
     def _do_teleop(self) -> None:
         args = ["--cameras"] if self.teleop_cams.get() else []
         self._launch_module("so101.xbox_teleop", args, "teleop")
+
+    def _do_mirror(self) -> None:
+        args = ["--mirror"]
+        if self.mirror_mode.get() == "vision":
+            args += ["--vision", "--cam", self.vision_cam.get()]
+        self._launch_module("so101.xbox_teleop", args, f"3D mirror ({self.mirror_mode.get()})")
 
     def _do_vision(self) -> None:
         self._launch_module("so101.xbox_teleop", ["--vision", "--cam", self.vision_cam.get()],
