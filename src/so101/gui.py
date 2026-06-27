@@ -13,6 +13,7 @@ The text-menu version is still available as ``python -m so101.app``.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -25,6 +26,9 @@ from . import CONFIG_DIR, REPO_ROOT, load_config
 
 # Kept local so the GUI starts instantly (importing record would pull in mujoco).
 DEFAULT_TASK = "Pick up the small object and place it at the target."
+
+# Persisted GUI field values (machine-local, git-ignored).
+SETTINGS_PATH = REPO_ROOT / ".app_settings.json"
 
 PAD = {"padx": 8, "pady": 4}
 
@@ -39,6 +43,8 @@ def _console_kwargs() -> dict:
 class Launcher:
     def __init__(self, root: tk.Tk):
         self.root = root
+        self._saved = self._load_settings()   # values from last session
+        self._vars: dict[str, tk.Variable] = {}
         root.title("SO-101 launcher")
         root.minsize(560, 0)
 
@@ -57,6 +63,27 @@ class Launcher:
         self.status = tk.StringVar(value="Ready.")
         ttk.Separator(root, orient="horizontal").pack(fill="x", pady=(8, 0))
         ttk.Label(root, textvariable=self.status, foreground="#0a6").pack(anchor="w", padx=12, pady=8)
+
+    # -- settings persistence ------------------------------------------------
+    def _load_settings(self) -> dict:
+        try:
+            return json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _save_settings(self) -> None:
+        try:
+            data = {k: v.get() for k, v in self._vars.items()}
+            SETTINGS_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _var(self, key: str, default, cls=tk.StringVar):
+        """A tk variable that restores its last value and autosaves on every change."""
+        var = cls(value=self._saved.get(key, default))
+        var.trace_add("write", lambda *_: self._save_settings())
+        self._vars[key] = var
+        return var
 
     # -- launching -----------------------------------------------------------
     def _launch_module(self, module: str, args: list[str], label: str) -> None:
@@ -77,7 +104,7 @@ class Launcher:
 
     def _practice_section(self) -> None:
         f = self._group("Practice in the simulator")
-        self.practice_input = tk.StringVar(value="xbox")
+        self.practice_input = self._var("practice_input", "xbox")
         ttk.Label(f, text="Input:").grid(row=0, column=0, sticky="w", **PAD)
         ttk.Radiobutton(f, text="Xbox controller", variable=self.practice_input,
                         value="xbox").grid(row=0, column=1, sticky="w", **PAD)
@@ -92,10 +119,10 @@ class Launcher:
 
     def _record_section(self) -> None:
         f = self._group("Record episodes")
-        self.rec_backend = tk.StringVar(value="sim")
-        self.rec_eps = tk.StringVar(value="10")
-        self.rec_repo = tk.StringVar(value="local/so101_pick_place_sim")
-        self.rec_task = tk.StringVar(value=DEFAULT_TASK)
+        self.rec_backend = self._var("rec_backend", "sim")
+        self.rec_eps = self._var("rec_eps", "10")
+        self.rec_repo = self._var("rec_repo", "local/so101_pick_place_sim")
+        self.rec_task = self._var("rec_task", DEFAULT_TASK)
 
         ttk.Label(f, text="Backend:").grid(row=0, column=0, sticky="w", **PAD)
         ttk.Radiobutton(f, text="Sim", variable=self.rec_backend, value="sim",
@@ -131,9 +158,9 @@ class Launcher:
 
     def _policy_section(self) -> None:
         f = self._group("Run a trained policy")
-        self.pol_backend = tk.StringVar(value="sim")
-        self.pol_ckpt = tk.StringVar(value="")
-        self.pol_ds = tk.StringVar(value="local/so101_pick_place_sim")
+        self.pol_backend = self._var("pol_backend", "sim")
+        self.pol_ckpt = self._var("pol_ckpt", "")
+        self.pol_ds = self._var("pol_ds", "local/so101_pick_place_sim")
 
         ttk.Label(f, text="Backend:").grid(row=0, column=0, sticky="w", **PAD)
         ttk.Radiobutton(f, text="Sim", variable=self.pol_backend, value="sim").grid(
@@ -169,10 +196,10 @@ class Launcher:
 
     def _train_section(self) -> None:
         f = self._group("Train a policy")
-        self.tr_repo = tk.StringVar(value="local/so101_pick_place_sim")
-        self.tr_policy = tk.StringVar(value="act")
-        self.tr_steps = tk.StringVar(value="20000")
-        self.tr_device = tk.StringVar(value="cpu")
+        self.tr_repo = self._var("tr_repo", "local/so101_pick_place_sim")
+        self.tr_policy = self._var("tr_policy", "act")
+        self.tr_steps = self._var("tr_steps", "20000")
+        self.tr_device = self._var("tr_device", "cpu")
 
         ttk.Label(f, text="Dataset id:").grid(row=0, column=0, sticky="w", **PAD)
         ttk.Entry(f, textvariable=self.tr_repo, width=28).grid(row=0, column=1, sticky="we", **PAD)
@@ -199,7 +226,7 @@ class Launcher:
 
     def _hardware_section(self) -> None:
         f = self._group("Real arm")
-        self.hw_port = tk.StringVar(value=load_config("robot")["port"])
+        self.hw_port = self._var("hw_port", load_config("robot")["port"])
 
         # First-time setup, left to right in the order you run them.
         ttk.Label(f, text="USB port:").grid(row=0, column=0, sticky="w", **PAD)
@@ -216,7 +243,7 @@ class Launcher:
 
         ttk.Separator(f, orient="horizontal").grid(row=2, column=0, columnspan=5, sticky="we", pady=4)
 
-        self.teleop_cams = tk.BooleanVar(value=False)
+        self.teleop_cams = self._var("teleop_cams", False, tk.BooleanVar)
         ttk.Button(f, text="Teleoperate", command=self._do_teleop).grid(row=3, column=0, **PAD)
         ttk.Checkbutton(f, text="with cameras", variable=self.teleop_cams).grid(
             row=3, column=1, sticky="w", **PAD)

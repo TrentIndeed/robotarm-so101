@@ -28,6 +28,9 @@ wandb/
 calibration/
 *.json.local
 
+# Machine-local GUI settings (persisted field values)
+.app_settings.json
+
 # OS / editor
 .DS_Store
 Thumbs.db

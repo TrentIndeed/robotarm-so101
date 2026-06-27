@@ -91,30 +91,40 @@ def _open_cv_cameras():
     return caps
 
 
-_TILE_W, _TILE_H, _TILE_M = 320, 240, 12  # camera overlay tile size + margin (px)
+_MARGIN = 12  # px around camera tiles
 
 
 def _camera_overlays(caps, viewport):
-    """Read each capture and build (MjrRect, RGB) overlays stacked down the right
-    edge of the viewer. The viewer flips vertically itself, so pass top-down RGB."""
+    """Build (MjrRect, RGB) overlays filling the RIGHT side of the viewer: the camera
+    feeds stacked, each sized as large as fits (4:3 kept) so the layout is sim on the
+    left, big cameras on the right. The viewer flips vertically itself -> pass top-down RGB."""
     import cv2
     import mujoco
 
-    overlays = []
-    k = 0
+    frames = []
     for name, cap, rot in caps:
         ok, frame = cap.read()
         if not ok or frame is None:
             continue
         if rot is not None:
             frame = cv2.rotate(frame, rot)
-        frame = cv2.resize(frame, (_TILE_W, _TILE_H))
-        cv2.putText(frame, name, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # set_images wants RGB
-        left = max(0, viewport.width - _TILE_W - _TILE_M)
-        bottom = max(0, viewport.height - _TILE_M - k * (_TILE_H + _TILE_M) - _TILE_H)
-        overlays.append((mujoco.MjrRect(left, bottom, _TILE_W, _TILE_H), rgb))
-        k += 1
+        frames.append((name, frame))
+    if not frames or viewport.width < 2 or viewport.height < 2:
+        return []
+
+    n, m = len(frames), _MARGIN
+    th = max(1, (viewport.height - (n + 1) * m) // n)   # n tiles stacked, full height
+    tw = min(round(th * 4 / 3), viewport.width // 2)    # keep 4:3, never past half-width
+    th = min(th, round(tw * 3 / 4))                     # re-fit height if width-capped
+
+    overlays = []
+    for k, (name, frame) in enumerate(frames):
+        f = cv2.resize(frame, (tw, th))
+        cv2.putText(f, name, (10, 34), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+        rgb = cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
+        left = max(0, viewport.width - tw - m)
+        bottom = max(0, viewport.height - m - (k + 1) * th - k * m)
+        overlays.append((mujoco.MjrRect(left, bottom, tw, th), rgb))
     return overlays
 
 
