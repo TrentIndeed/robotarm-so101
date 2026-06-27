@@ -305,7 +305,7 @@ class App:
             self._set(connected=False, status=(f"Connection failed: {exc}", "#c00"))
         finally:
             if self._save_thread is not None and self._save_thread.is_alive():
-                self._save_thread.join(timeout=60)   # let an in-flight encode finish
+                self._save_thread.join(timeout=15)   # let an in-flight (streaming) save finish
             try:
                 if dataset is not None:
                     dataset.finalize()
@@ -497,7 +497,7 @@ class App:
     def _on_close(self):
         self._set(running=False)
         if self._worker is not None:
-            self._worker.join(timeout=40)   # waits out an in-flight save so it isn't lost
+            self._worker.join(timeout=10)   # let it finalize + flush an in-flight save
         self.root.destroy()
 
 
@@ -505,6 +505,10 @@ def main():
     root = tk.Tk()
     App(root)
     root.mainloop()
+    # Data is already finalized in _on_close. LeRobot's camera/encoder threads can be
+    # non-daemon and a flaky-camera disconnect can block, which would hang the terminal
+    # after the window closes — so force a clean process exit.
+    os._exit(0)
 
 
 if __name__ == "__main__":
