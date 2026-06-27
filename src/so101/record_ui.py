@@ -63,6 +63,7 @@ class App:
         self.sim = s.get("rec_backend", "sim") == "sim"
         self.repo_id = s.get("rec_repo", "local/so101_pick_place")
         self.task = s.get("rec_task", DEFAULT_TASK)
+        self.input_mode = s.get("input_mode", "xbox")   # "xbox" or "desktop"
 
         self.rng = random.Random()
         self.cam_labels: dict = {}
@@ -72,6 +73,7 @@ class App:
         self._shared = self._fresh_shared()
         self._worker = None
         self._save_thread = None
+        self._input = None        # input controller (xbox or desktop), created per session
 
         root.title("SO-101")
         self._build_menu()
@@ -109,6 +111,12 @@ class App:
                              value="sim", command=self._change_backend)
         setm.add_radiobutton(label="Backend: Real arm", variable=self._backend_var,
                              value="real", command=self._change_backend)
+        setm.add_separator()
+        self._input_var = tk.StringVar(value=self.input_mode)
+        setm.add_radiobutton(label="Input: Xbox controller", variable=self._input_var,
+                             value="xbox", command=self._change_input)
+        setm.add_radiobutton(label="Input: Keyboard + mouse", variable=self._input_var,
+                             value="desktop", command=self._change_input)
         setm.add_separator()
         setm.add_command(label="Dataset id…", command=self._change_dataset)
         setm.add_command(label="Task description…", command=self._change_task)
@@ -160,20 +168,24 @@ class App:
         self.count = tk.StringVar(value="Saved episodes: 0")
         ttk.Label(self.root, textvariable=self.count, font=("Segoe UI", 12)).pack(pady=2)
 
-        cmap = ttk.LabelFrame(self.root, text="Controls — what each input moves")
-        cmap.pack(fill="x", padx=10, pady=(2, 6))
-        legend = [
-            ("Left stick L/R", "rotate base"), ("Left stick U/D", "raise / lower arm"),
-            ("Right stick L/R", "twist wrist"), ("Right stick U/D", "reach in / out"),
-            ("LT / RT", "wrist tilt down / up"), ("A / B", "open / close gripper"),
-            ("Back/View", "hold (e-stop)"), ("Start / X", "save take / discard"),
-        ]
-        for i, (ctrl, what) in enumerate(legend):
-            row, col = i // 2, (i % 2) * 2
-            ttk.Label(cmap, text=ctrl, font=("Consolas", 9, "bold")).grid(
-                row=row, column=col, sticky="w", padx=(8, 4), pady=1)
-            ttk.Label(cmap, text=what, foreground="#555").grid(
-                row=row, column=col + 1, sticky="w", padx=(0, 16), pady=1)
+        self.cmap = ttk.LabelFrame(self.root, text="Controls — what each input moves")
+        self.cmap.pack(fill="x", padx=10, pady=(2, 6))
+        self._refresh_legend()
+
+        # Mouse pad (used only in Keyboard+Mouse mode): move = wrist, L/R click = grip.
+        self.pad = tk.Canvas(self.root, height=70, bg="#202020", highlightthickness=1,
+                             highlightbackground="#888")
+        self.pad.pack(fill="x", padx=10, pady=(0, 6))
+        self.pad.create_text(12, 35, anchor="w", fill="#aaa",
+                             text="Keyboard+Mouse: move mouse here = wrist  ·  L-click = open  ·  R-click = close")
+        self.pad.bind("<Motion>", lambda e: self._route("mouse", e))
+        self.pad.bind("<Leave>", lambda e: self._route("leave", e))
+        self.pad.bind("<ButtonPress-1>", lambda e: self._route("l", True))
+        self.pad.bind("<ButtonRelease-1>", lambda e: self._route("l", False))
+        self.pad.bind("<ButtonPress-3>", lambda e: self._route("r", True))
+        self.pad.bind("<ButtonRelease-3>", lambda e: self._route("r", False))
+        self.root.bind("<KeyPress>", lambda e: self._on_key(e, True))
+        self.root.bind("<KeyRelease>", lambda e: self._on_key(e, False))
 
         watch = ttk.LabelFrame(self.root, text="Watch demos")
         watch.pack(fill="both", expand=True, padx=10, pady=8)
@@ -203,6 +215,47 @@ class App:
             lbl = ttk.Label(col)
             lbl.pack()
             self.cam_labels[name] = lbl
+
+    def _refresh_legend(self):
+        for w in self.cmap.winfo_children():
+            w.destroy()
+        if self.input_mode == "desktop":
+            legend = [("A / D", "rotate base"), ("W / S", "raise / lower"),
+                      ("Q / E", "reach in / out"), ("mouse pad", "wrist roll / tilt"),
+                      ("L / R click", "gripper open / close"), ("Enter / Backspace", "save / discard")]
+        else:
+            legend = [("Left stick L/R", "rotate base"), ("Left stick U/D", "raise / lower arm"),
+                      ("Right stick L/R", "twist wrist"), ("Right stick U/D", "reach in / out"),
+                      ("LT / RT", "wrist tilt down / up"), ("A / B", "open / close gripper"),
+                      ("Back/View", "hold (e-stop)"), ("Start / X", "save take / discard")]
+        for i, (ctrl, what) in enumerate(legend):
+            row, col = i // 2, (i % 2) * 2
+            ttk.Label(self.cmap, text=ctrl, font=("Consolas", 9, "bold")).grid(
+                row=row, column=col, sticky="w", padx=(8, 4), pady=1)
+            ttk.Label(self.cmap, text=what, foreground="#555").grid(
+                row=row, column=col + 1, sticky="w", padx=(0, 16), pady=1)
+
+    def _route(self, kind, arg):
+        from .desktop_control import DesktopController
+        if not isinstance(self._input, DesktopController):
+            return
+        if kind == "mouse":
+            self._input.on_mouse(arg.x, arg.y)
+        elif kind == "leave":
+            self._input.on_mouse_leave()
+        else:
+            self._input.set_click(kind, arg)
+
+    def _on_key(self, event, down):
+        k = event.keysym.lower()
+        if k == "return" and down:
+            self._cmd.put(("toggle",))
+        elif k == "backspace" and down:
+            self._cmd.put(("discard",))
+        else:
+            from .desktop_control import DesktopController
+            if isinstance(self._input, DesktopController):
+                self._input.set_key(k, down)
 
     # -- UI refresh (main thread, light) -------------------------------------
     def _refresh(self):
@@ -242,6 +295,12 @@ class App:
         self._set(**self._fresh_shared())
         while not self._cmd.empty():
             self._cmd.get_nowait()
+        if self.input_mode == "desktop":
+            from .desktop_control import DesktopController
+            self._input = DesktopController()
+            self._input.connect()
+        else:
+            self._input = None              # worker creates the Xbox controller
         self._worker = threading.Thread(target=self._run_worker, args=(self.sim, self.repo_id), daemon=True)
         self._worker.start()
 
@@ -254,13 +313,18 @@ class App:
         try:
             robot = make_robot(sim=sim, use_cameras=True)
             robot.connect()
-            try:
-                ctrl = XboxTeleopController()
-                ctrl.connect()
-                btn, fps = ctrl.cfg["buttons"], ctrl.cfg["control_hz"]
-            except Exception as exc:
-                ctrl, btn, fps = None, {}, 30
-                self._set(status=(f"Cameras only — no controller ({exc})", "#a60"))
+            if self.input_mode == "desktop":
+                ctrl = self._input          # DesktopController, created + bound on main thread
+                btn, fps = {}, ctrl.cfg["control_hz"]
+            else:
+                try:
+                    ctrl = XboxTeleopController()
+                    ctrl.connect()
+                    self._input = ctrl
+                    btn, fps = ctrl.cfg["buttons"], ctrl.cfg["control_hz"]
+                except Exception as exc:
+                    ctrl, btn, fps = None, {}, 30
+                    self._set(status=(f"Cameras only — no controller ({exc})", "#a60"))
 
             cam_names = [k for k, v in robot.observation_features.items() if isinstance(v, tuple)]
             n_steps = max(1, round((1.0 / fps) / robot.model.opt.timestep)) if sim else 0
@@ -305,10 +369,11 @@ class App:
                     robot.send_action(action)
                     if sim:
                         robot.step(n_steps)
-                    if pressed(btn["episode_done"]):
-                        recording = self._toggle(recording, dataset, sim, robot)
-                    elif recording and pressed(btn["episode_cancel"]):
-                        recording = self._discard(recording, dataset)
+                    if hasattr(ctrl, "joystick"):    # Xbox hardware buttons for record control
+                        if pressed(btn["episode_done"]):
+                            recording = self._toggle(recording, dataset, sim, robot)
+                        elif recording and pressed(btn["episode_cancel"]):
+                            recording = self._discard(recording, dataset)
                     if recording:
                         of = build_dataset_frame(dataset.features, obs, prefix=OBS_STR)
                         af = build_dataset_frame(dataset.features, action, prefix=ACTION)
@@ -449,6 +514,12 @@ class App:
     def _change_backend(self):
         self.sim = self._backend_var.get() == "sim"
         _save_settings({"rec_backend": "sim" if self.sim else "real"})
+        self._reconnect()
+
+    def _change_input(self):
+        self.input_mode = self._input_var.get()
+        _save_settings({"input_mode": self.input_mode})
+        self._refresh_legend()
         self._reconnect()
 
     def _change_dataset(self):
