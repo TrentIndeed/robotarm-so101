@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import shutil
 import subprocess
 import sys
 import time
@@ -190,18 +191,30 @@ class App:
             self.cam_names = [k for k, v in self.robot.observation_features.items() if isinstance(v, tuple)]
             self.n_steps = max(1, round((1.0 / self.fps) / self.robot.model.opt.timestep)) if self.sim else 0
             self.root_dir = REPO_ROOT / "data" / self.repo_id.replace("/", "__")
-            if self.root_dir.exists():
-                self.dataset = LeRobotDataset.resume(repo_id=self.repo_id, root=self.root_dir)
-                self.episodes = self.dataset.num_episodes
-            else:
+
+            def _create():
                 features = {
                     **hw_to_dataset_features(self.robot.observation_features, OBS_STR, use_video=True),
                     **hw_to_dataset_features(self.robot.action_features, ACTION),
                 }
-                self.dataset = LeRobotDataset.create(
+                return LeRobotDataset.create(
                     repo_id=self.repo_id, fps=self.fps, features=features, root=self.root_dir,
                     robot_type=self.robot.name, use_videos=True)
-                self.episodes = 0
+
+            if not self.root_dir.exists():
+                self.dataset, self.episodes = _create(), 0
+            else:
+                try:
+                    self.dataset = LeRobotDataset.resume(repo_id=self.repo_id, root=self.root_dir)
+                    self.episodes = self.dataset.num_episodes
+                except Exception:
+                    # Incomplete dataset from a prior aborted run (no finalized episodes):
+                    # recreate it. If it actually holds episodes, don't clobber — re-raise.
+                    ep_dir = self.root_dir / "meta" / "episodes"
+                    if ep_dir.exists() and any(ep_dir.rglob("*.parquet")):
+                        raise
+                    shutil.rmtree(self.root_dir, ignore_errors=True)
+                    self.dataset, self.episodes = _create(), 0
 
             self._populate_cameras()
             self._refresh_watch()
