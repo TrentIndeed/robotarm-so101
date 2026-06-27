@@ -1,27 +1,29 @@
 """The SO-101 app — one window: live cameras, demo recording, settings in the menu.
 
-Opens with your saved settings (shared with the launcher's .app_settings.json), connects
-to the chosen backend, shows the gripper + desk feeds, and lets you record / watch demos.
-Everything day-to-day lives here; the menu bar holds settings (backend, dataset, task) and
-tools. Drive with the Xbox controller; Start = begin a take, Start again (or the on-screen
-button) = stop + save, X = discard. The on-screen buttons stay in sync with the controller.
+The robot control loop (serial I/O, camera reads, recording, video encoding) runs in a
+BACKGROUND thread; the Tk main thread only draws the latest frames and sends commands.
+That keeps the window responsive (draggable) and means saving a take — which encodes
+video — never freezes the UI or stalls the controller. Videos use h264 (fast: ~1 s a
+take, vs ~30 s for the default AV1). "Watch" finalizes the dataset so the demo is
+readable, opens the replay, then resumes so you can keep recording.
+
+Opens with your saved settings (.app_settings.json). Drive with the Xbox controller;
+Start = begin a take, Start again (or the on-screen button) = stop + save, X = discard.
+The on-screen buttons reflect the controller. Settings + tools are in the menu bar.
 
     python -m so101            # this app (via ./run)
-    python -m so101.record_ui  # same, directly
-
-Robot serial I/O + controller + Tk all run on one thread via Tk's after() loop, safe with
-the single-threaded Feetech bus. Heavy/extra tools (3D mirror, training, dataset replay)
-necessarily open their own windows — Tk can't host a MuJoCo/rerun/console view.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import queue
 import random
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
@@ -35,6 +37,7 @@ from .robot import make_robot
 
 SETTINGS_PATH = REPO_ROOT / ".app_settings.json"
 CAM_W, CAM_H = 400, 300
+VCODEC = "h264"     # fast x264 encode (~1 s/take) vs the default libsvtav1 (~30 s)
 
 
 def _load_settings() -> dict:
@@ -61,30 +64,38 @@ class App:
         self.repo_id = s.get("rec_repo", "local/so101_pick_place")
         self.task = s.get("rec_task", DEFAULT_TASK)
 
-        self.robot = self.ctrl = self.dataset = None
-        self.connected = False
-        self.recording = False
-        self.episodes = 0
         self.rng = random.Random()
-        self.btn: dict = {}
-        self.fps = 30
-        self._prev_btn: dict[int, bool] = {}
-        self._imgs: dict[str, ImageTk.PhotoImage] = {}
-        self._gen = 0          # tick-loop generation (so reconnects don't double-run)
-        self._frame_n = 0
+        self.cam_labels: dict = {}
+        self._imgs: dict = {}
+        self._lock = threading.Lock()
+        self._cmd: queue.Queue = queue.Queue()
+        self._shared = self._fresh_shared()
+        self._worker = None
 
         root.title("SO-101")
         self._build_menu()
         self._build_ui()
         root.protocol("WM_DELETE_WINDOW", self._on_close)
-        self._set_status("Connecting…", "#a60")
-        root.after(200, self._connect)
+        self._start_worker()
+        self.root.after(60, self._refresh)
 
-    # -- menu bar (settings + tools) -----------------------------------------
+    # -- shared state --------------------------------------------------------
+    def _fresh_shared(self):
+        return {"frames": {}, "status": ("Connecting…", "#a60"), "episodes": 0,
+                "recording": False, "running": True, "connected": False, "cam_names": []}
+
+    def _set(self, **kw):
+        with self._lock:
+            self._shared.update(kw)
+
+    def _get(self, key):
+        with self._lock:
+            return self._shared[key]
+
+    # -- menu bar ------------------------------------------------------------
     def _build_menu(self):
         bar = tk.Menu(self.root)
         self.root.config(menu=bar)
-
         filem = tk.Menu(bar, tearoff=0)
         bar.add_cascade(label="File", menu=filem)
         filem.add_command(label="Quit", command=self._on_close)
@@ -128,9 +139,7 @@ class App:
 
         self.cam_box = ttk.Frame(self.root)
         self.cam_box.pack(padx=10, pady=8)
-        self.cam_labels: dict = {}
-        self._cam_msg = ttk.Label(self.cam_box, text="Connecting…", font=("Segoe UI", 12))
-        self._cam_msg.pack(padx=80, pady=60)
+        ttk.Label(self.cam_box, text="Connecting…", font=("Segoe UI", 12)).pack(padx=80, pady=60)
 
         self.status = tk.StringVar(value="…")
         self.status_lbl = tk.Label(self.root, textvariable=self.status, font=("Segoe UI", 16, "bold"))
@@ -140,10 +149,10 @@ class App:
         controls.pack(pady=4)
         self.start_btn = tk.Button(controls, text="Start recording", width=16, height=2,
                                    bg="#1a7", fg="white", font=("Segoe UI", 11, "bold"),
-                                   command=self._toggle_record, state="disabled")
+                                   state="disabled", command=lambda: self._cmd.put(("toggle",)))
         self.start_btn.grid(row=0, column=0, padx=6)
         self.discard_btn = tk.Button(controls, text="Discard take", width=14, height=2,
-                                     command=self._discard, state="disabled")
+                                     state="disabled", command=lambda: self._cmd.put(("discard",)))
         self.discard_btn.grid(row=0, column=1, padx=6)
 
         self.count = tk.StringVar(value="Saved episodes: 0")
@@ -154,9 +163,7 @@ class App:
         self.ep_list = tk.Listbox(watch, height=6)
         self.ep_list.pack(side="left", fill="both", expand=True, padx=6, pady=6)
         self.ep_list.bind("<Double-Button-1>", lambda _e: self._watch_selected())
-        side = ttk.Frame(watch)
-        side.pack(side="left", fill="y", padx=6, pady=6)
-        ttk.Button(side, text="Watch selected", command=self._watch_selected).pack(fill="x", pady=2)
+        ttk.Button(watch, text="Watch selected", command=self._watch_selected).pack(side="left", padx=6)
 
         ttk.Label(self.root, text="Controller: Start = begin/stop+save a take, X = discard.",
                   foreground="#777").pack(anchor="w", padx=10, pady=(0, 8))
@@ -165,103 +172,11 @@ class App:
         self.header.set(f"Backend: {'SIM' if self.sim else 'REAL'}    Dataset: {self.repo_id}"
                         f"    Task: {self.task}")
 
-    def _set_status(self, text, color):
-        self.status.set(text)
-        self.status_lbl.configure(fg=color)
-
-    # -- connection lifecycle ------------------------------------------------
-    def _connect(self):
-        try:
-            from lerobot.datasets.feature_utils import build_dataset_frame, hw_to_dataset_features
-            from lerobot.datasets.lerobot_dataset import LeRobotDataset
-            from lerobot.utils.constants import ACTION, OBS_STR
-
-            self._build_frame, self._OBS, self._ACTION = build_dataset_frame, OBS_STR, ACTION
-            self.robot = make_robot(sim=self.sim, use_cameras=True)
-            self.robot.connect()
-            try:
-                self.ctrl = XboxTeleopController()
-                self.ctrl.connect()
-                self.btn = self.ctrl.cfg["buttons"]
-                self.fps = self.ctrl.cfg["control_hz"]
-            except Exception as exc:
-                self.ctrl = None
-                self._set_status(f"Cameras only — no controller ({exc})", "#a60")
-
-            self.cam_names = [k for k, v in self.robot.observation_features.items() if isinstance(v, tuple)]
-            self.n_steps = max(1, round((1.0 / self.fps) / self.robot.model.opt.timestep)) if self.sim else 0
-            self.root_dir = REPO_ROOT / "data" / self.repo_id.replace("/", "__")
-
-            def _create():
-                features = {
-                    **hw_to_dataset_features(self.robot.observation_features, OBS_STR, use_video=True),
-                    **hw_to_dataset_features(self.robot.action_features, ACTION),
-                }
-                return LeRobotDataset.create(
-                    repo_id=self.repo_id, fps=self.fps, features=features, root=self.root_dir,
-                    robot_type=self.robot.name, use_videos=True)
-
-            if not self.root_dir.exists():
-                self.dataset, self.episodes = _create(), 0
-            else:
-                try:
-                    self.dataset = LeRobotDataset.resume(repo_id=self.repo_id, root=self.root_dir)
-                    self.episodes = self.dataset.num_episodes
-                except Exception:
-                    # Incomplete dataset from a prior aborted run (no finalized episodes):
-                    # recreate it. If it actually holds episodes, don't clobber — re-raise.
-                    ep_dir = self.root_dir / "meta" / "episodes"
-                    if ep_dir.exists() and any(ep_dir.rglob("*.parquet")):
-                        raise
-                    shutil.rmtree(self.root_dir, ignore_errors=True)
-                    self.dataset, self.episodes = _create(), 0
-
-            self._populate_cameras()
-            self._refresh_watch()
-            if self.sim:
-                _reset_sim_block(self.robot, self.rng)
-            if self.ctrl:
-                self.ctrl.seed_targets(self.robot.get_observation())
-                self._set_status("idle", "#0a0")
-            self.connected = True
-            self._update_controls()
-            self._gen += 1
-            self.root.after(0, lambda g=self._gen: self._tick(g))
-        except Exception as exc:
-            self.connected = False
-            self._set_status(f"Connection failed: {exc}", "#c00")
-            self._cam_msg.configure(text="Not connected. Fix the arm / pick Settings → Backend,\n"
-                                         "then Settings → Reconnect.")
-
-    def _disconnect(self):
-        self.connected = False
-        if self.dataset is not None:
-            try:
-                if self.recording:
-                    self.dataset.clear_episode_buffer()
-                self.dataset.finalize()
-            except Exception:
-                pass
-        for obj in (self.ctrl, self.robot):
-            try:
-                if obj is not None:
-                    obj.disconnect()
-            except Exception:
-                pass
-        self.robot = self.ctrl = self.dataset = None
-        self.recording = False
-
-    def _reconnect(self):
-        self._disconnect()
-        self._refresh_header()
-        self._set_status("Connecting…", "#a60")
-        self.root.after(200, self._connect)
-
-    def _populate_cameras(self):
+    def _populate_cameras(self, cam_names):
         for w in self.cam_box.winfo_children():
             w.destroy()
         self.cam_labels = {}
-        for i, name in enumerate(self.cam_names):
+        for i, name in enumerate(cam_names):
             col = ttk.Frame(self.cam_box)
             col.grid(row=0, column=i, padx=6)
             ttk.Label(col, text=name).pack()
@@ -269,94 +184,190 @@ class App:
             lbl.pack()
             self.cam_labels[name] = lbl
 
-    def _update_controls(self):
-        ok = self.connected and self.ctrl is not None
-        self.start_btn.configure(state="normal" if ok else "disabled")
-
-    # -- control loop --------------------------------------------------------
-    def _pressed(self, b: int) -> bool:
-        now = bool(self.ctrl.joystick.get_button(b))
-        was = self._prev_btn.get(b, False)
-        self._prev_btn[b] = now
-        return now and not was
-
-    def _tick(self, gen):
-        if gen != self._gen or not self.connected or not self.root.winfo_exists():
+    # -- UI refresh (main thread, light) -------------------------------------
+    def _refresh(self):
+        if not self.root.winfo_exists():
             return
-        t0 = time.perf_counter()
-        obs = self.robot.get_observation()
-        if self.ctrl is not None:
-            action = self.ctrl.compute_action()
-            self.robot.send_action(action)
-            if self.sim:
-                self.robot.step(self.n_steps)
-            if self._pressed(self.btn["episode_done"]):
-                self._toggle_record()
-            elif self.recording and self._pressed(self.btn["episode_cancel"]):
-                self._discard()
-            if self.recording:
-                of = self._build_frame(self.dataset.features, obs, prefix=self._OBS)
-                af = self._build_frame(self.dataset.features, action, prefix=self._ACTION)
-                self.dataset.add_frame({**of, **af, "task": self.task})
+        with self._lock:
+            frames = dict(self._shared["frames"])
+            status, episodes = self._shared["status"], self._shared["episodes"]
+            recording, connected = self._shared["recording"], self._shared["connected"]
+            cam_names = list(self._shared["cam_names"])
 
-        self._show_cameras(obs)
-        # Schedule the next frame accounting for the work just done, so the display
-        # actually runs near `fps` instead of fps minus the per-frame work time.
-        delay = max(1, int(1000 / self.fps - (time.perf_counter() - t0) * 1000))
-        self.root.after(delay, lambda: self._tick(gen))
+        self.status.set(status[0])
+        self.status_lbl.configure(fg=status[1])
+        self.count.set(f"Saved episodes: {episodes}")
+        if cam_names and set(self.cam_labels) != set(cam_names):
+            self._populate_cameras(cam_names)
+        for cam, frame in frames.items():
+            if cam in self.cam_labels:
+                photo = ImageTk.PhotoImage(Image.fromarray(frame).resize((CAM_W, CAM_H)))
+                self._imgs[cam] = photo
+                self.cam_labels[cam].configure(image=photo)
 
-    def _show_cameras(self, obs):
-        for name, lbl in self.cam_labels.items():
-            if name in obs:
-                photo = ImageTk.PhotoImage(Image.fromarray(obs[name]).resize((CAM_W, CAM_H)))
-                self._imgs[name] = photo
-                lbl.configure(image=photo)
+        ready = connected and bool(cam_names)
+        self.start_btn.configure(state="normal" if ready else "disabled",
+                                 text="Stop & Save" if recording else "Start recording",
+                                 bg="#c33" if recording else "#1a7")
+        self.discard_btn.configure(state="normal" if (ready and recording) else "disabled")
+        while self.ep_list.size() < episodes:
+            self.ep_list.insert("end", f"Episode {self.ep_list.size()}")
+        while self.ep_list.size() > episodes:
+            self.ep_list.delete(self.ep_list.size() - 1)
+        self.root.after(50, self._refresh)
 
-    # -- recording actions (shared by buttons + controller) ------------------
-    def _toggle_record(self):
-        if not self.connected or self.ctrl is None:
-            return
-        if not self.recording:
-            if self.sim:
-                _reset_sim_block(self.robot, self.rng)
-            self.recording = True
-            self.start_btn.configure(text="Stop & Save", bg="#c33")
-            self.discard_btn.configure(state="normal")
-            self._set_status("RECORDING", "#c00")
-        else:
-            self.dataset.save_episode(parallel_encoding=False)
-            self.episodes += 1
-            self.recording = False
-            self.start_btn.configure(text="Start recording", bg="#1a7")
-            self.discard_btn.configure(state="disabled")
-            self._set_status("idle", "#0a0")
-            self.count.set(f"Saved episodes: {self.episodes}")
-            self.ep_list.insert("end", f"Episode {self.episodes - 1}")
+    # -- worker thread (all robot/dataset I/O) -------------------------------
+    def _start_worker(self):
+        self._set(**self._fresh_shared())
+        while not self._cmd.empty():
+            self._cmd.get_nowait()
+        self._worker = threading.Thread(target=self._run_worker, args=(self.sim, self.repo_id), daemon=True)
+        self._worker.start()
 
-    def _discard(self):
-        if not self.recording:
-            return
-        self.dataset.clear_episode_buffer()
-        self.recording = False
-        self.start_btn.configure(text="Start recording", bg="#1a7")
-        self.discard_btn.configure(state="disabled")
-        self._set_status("idle (discarded)", "#0a0")
+    def _run_worker(self, sim, repo_id):
+        from lerobot.datasets.feature_utils import build_dataset_frame, hw_to_dataset_features
+        from lerobot.datasets.lerobot_dataset import LeRobotDataset
+        from lerobot.utils.constants import ACTION, OBS_STR
 
-    def _refresh_watch(self):
-        self.ep_list.delete(0, "end")
-        for i in range(self.episodes):
-            self.ep_list.insert("end", f"Episode {i}")
-        self.count.set(f"Saved episodes: {self.episodes}")
+        robot = ctrl = dataset = None
+        try:
+            robot = make_robot(sim=sim, use_cameras=True)
+            robot.connect()
+            try:
+                ctrl = XboxTeleopController()
+                ctrl.connect()
+                btn, fps = ctrl.cfg["buttons"], ctrl.cfg["control_hz"]
+            except Exception as exc:
+                ctrl, btn, fps = None, {}, 30
+                self._set(status=(f"Cameras only — no controller ({exc})", "#a60"))
+
+            cam_names = [k for k, v in robot.observation_features.items() if isinstance(v, tuple)]
+            n_steps = max(1, round((1.0 / fps) / robot.model.opt.timestep)) if sim else 0
+            root_dir = REPO_ROOT / "data" / repo_id.replace("/", "__")
+            dataset, episodes = self._open_dataset(LeRobotDataset, hw_to_dataset_features,
+                                                   robot, OBS_STR, ACTION, root_dir, repo_id, fps)
+
+            self._set(cam_names=cam_names, episodes=episodes, connected=True,
+                      status=("idle" if ctrl else "cameras only — no controller", "#0a0" if ctrl else "#a60"))
+            if sim:
+                _reset_sim_block(robot, self.rng)
+            if ctrl:
+                ctrl.seed_targets(robot.get_observation())
+
+            recording = False
+            prev: dict = {}
+            dt = 1.0 / fps
+
+            def pressed(b):
+                now = bool(ctrl.joystick.get_button(b))
+                was = prev.get(b, False)
+                prev[b] = now
+                return now and not was
+
+            while self._get("running"):
+                t0 = time.perf_counter()
+                while True:
+                    try:
+                        cmd = self._cmd.get_nowait()
+                    except queue.Empty:
+                        break
+                    if cmd[0] == "toggle":
+                        recording = self._toggle(recording, dataset, sim, robot)
+                    elif cmd[0] == "discard":
+                        recording = self._discard(recording, dataset)
+                    elif cmd[0] == "watch" and not recording:
+                        dataset = self._watch(dataset, LeRobotDataset, repo_id, root_dir, cmd[1])
+
+                obs = robot.get_observation()
+                if ctrl is not None:
+                    action = ctrl.compute_action()
+                    robot.send_action(action)
+                    if sim:
+                        robot.step(n_steps)
+                    if pressed(btn["episode_done"]):
+                        recording = self._toggle(recording, dataset, sim, robot)
+                    elif recording and pressed(btn["episode_cancel"]):
+                        recording = self._discard(recording, dataset)
+                    if recording:
+                        of = build_dataset_frame(dataset.features, obs, prefix=OBS_STR)
+                        af = build_dataset_frame(dataset.features, action, prefix=ACTION)
+                        dataset.add_frame({**of, **af, "task": self.task})
+
+                self._set(frames={c: obs[c] for c in cam_names if c in obs})
+                time.sleep(max(0.0, dt - (time.perf_counter() - t0)))
+        except Exception as exc:
+            self._set(connected=False, status=(f"Connection failed: {exc}", "#c00"))
+        finally:
+            try:
+                if dataset is not None:
+                    dataset.finalize()
+            except Exception:
+                pass
+            for o in (ctrl, robot):
+                try:
+                    if o is not None:
+                        o.disconnect()
+                except Exception:
+                    pass
+
+    def _open_dataset(self, LeRobotDataset, hw_to_dataset_features, robot, OBS_STR, ACTION, root_dir, repo_id, fps):
+        def _create():
+            features = {**hw_to_dataset_features(robot.observation_features, OBS_STR, use_video=True),
+                        **hw_to_dataset_features(robot.action_features, ACTION)}
+            return LeRobotDataset.create(repo_id=repo_id, fps=fps, features=features, root=root_dir,
+                                         robot_type=robot.name, use_videos=True, vcodec=VCODEC)
+        if not root_dir.exists():
+            return _create(), 0
+        try:
+            ds = LeRobotDataset.resume(repo_id=repo_id, root=root_dir)
+            return ds, ds.num_episodes
+        except Exception:
+            ep_dir = root_dir / "meta" / "episodes"
+            if ep_dir.exists() and any(ep_dir.rglob("*.parquet")):
+                raise
+            shutil.rmtree(root_dir, ignore_errors=True)
+            return _create(), 0
+
+    # -- worker-thread record actions ----------------------------------------
+    def _toggle(self, recording, dataset, sim, robot):
+        if not recording:
+            if sim:
+                _reset_sim_block(robot, self.rng)
+            self._set(recording=True, status=("RECORDING", "#c00"))
+            return True
+        self._set(status=("Saving…", "#a60"))
+        dataset.save_episode(parallel_encoding=False)
+        with self._lock:
+            self._shared["episodes"] += 1
+            self._shared["recording"] = False
+            self._shared["status"] = ("idle", "#0a0")
+        return False
+
+    def _discard(self, recording, dataset):
+        if not recording:
+            return False
+        dataset.clear_episode_buffer()
+        self._set(recording=False, status=("idle (discarded)", "#0a0"))
+        return False
+
+    def _watch(self, dataset, LeRobotDataset, repo_id, root_dir, idx):
+        self._set(status=("Preparing demo…", "#a60"))
+        try:
+            dataset.finalize()                       # make it readable for the viewer
+            self._launch_exe("lerobot-dataset-viz", [
+                "--repo-id", repo_id, "--root", str(root_dir), "--episode-index", str(idx)])
+            dataset = LeRobotDataset.resume(repo_id=repo_id, root=root_dir)   # keep recording
+            self._set(status=("idle", "#0a0"))
+        except Exception as exc:
+            self._set(status=(f"Watch failed: {exc}", "#c00"))
+        return dataset
 
     def _watch_selected(self):
         sel = self.ep_list.curselection()
-        if not sel or self.dataset is None:
-            return
-        self._launch_exe("lerobot-dataset-viz", [
-            "--repo-id", self.dataset.repo_id, "--root", str(self.root_dir),
-            "--episode-index", str(sel[0])])
+        if sel:
+            self._cmd.put(("watch", sel[0]))
 
-    # -- settings handlers ---------------------------------------------------
+    # -- settings ------------------------------------------------------------
     def _change_backend(self):
         self.sim = self._backend_var.get() == "sim"
         _save_settings({"rec_backend": "sim" if self.sim else "real"})
@@ -378,7 +389,19 @@ class App:
             _save_settings({"rec_task": new})
             self._refresh_header()
 
-    # -- tools (these necessarily open their own window/console) --------------
+    def _reconnect(self):
+        self._set(running=False)
+        if self._worker is not None and self._worker.is_alive():
+            self._worker.join(timeout=4)
+        for w in self.cam_box.winfo_children():
+            w.destroy()
+        self.cam_labels = {}
+        ttk.Label(self.cam_box, text="Connecting…", font=("Segoe UI", 12)).pack(padx=80, pady=60)
+        self.ep_list.delete(0, "end")
+        self._refresh_header()
+        self._start_worker()
+
+    # -- tools (own window/console) ------------------------------------------
     def _launch_module(self, module, args):
         kw = {"creationflags": subprocess.CREATE_NEW_CONSOLE} if os.name == "nt" else {}
         subprocess.Popen([sys.executable, "-m", module, *args], **kw)
@@ -409,7 +432,9 @@ class App:
             f"--output_dir={out}", "--steps=20000"])
 
     def _on_close(self):
-        self._disconnect()
+        self._set(running=False)
+        if self._worker is not None:
+            self._worker.join(timeout=5)
         self.root.destroy()
 
 
