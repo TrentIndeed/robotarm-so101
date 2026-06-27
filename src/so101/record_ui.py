@@ -165,7 +165,10 @@ class App:
         self.ep_list = tk.Listbox(watch, height=6)
         self.ep_list.pack(side="left", fill="both", expand=True, padx=6, pady=6)
         self.ep_list.bind("<Double-Button-1>", lambda _e: self._watch_selected())
-        ttk.Button(watch, text="Watch selected", command=self._watch_selected).pack(side="left", padx=6)
+        wbtns = ttk.Frame(watch)
+        wbtns.pack(side="left", fill="y", padx=6, pady=6)
+        ttk.Button(wbtns, text="Watch selected", command=self._watch_selected).pack(fill="x", pady=2)
+        ttk.Button(wbtns, text="Delete selected", command=self._delete_selected).pack(fill="x", pady=2)
 
         ttk.Label(self.root, text="Controller: Start = begin/stop+save a take, X = discard.",
                   foreground="#777").pack(anchor="w", padx=10, pady=(0, 8))
@@ -382,6 +385,49 @@ class App:
         sel = self.ep_list.curselection()
         if sel:
             self._cmd.put(("watch", sel[0]))
+
+    def _delete_selected(self):
+        sel = self.ep_list.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if self._get("recording") or self._get("saving"):
+            messagebox.showinfo("Busy", "Stop / finish the current take first.")
+            return
+        if not messagebox.askyesno("Delete demo",
+                                   f"Delete Episode {idx}? This rebuilds the dataset and can't be undone."):
+            return
+        # Stop the worker so the dataset's files are released, then rebuild without
+        # this episode using lerobot-edit-dataset, then restart the worker.
+        self._set(running=False, connected=False, status=(f"Deleting episode {idx}…", "#a60"))
+        if self._worker is not None and self._worker.is_alive():
+            self._worker.join(timeout=45)
+        threading.Thread(target=self._do_delete, args=(idx,), daemon=True).start()
+
+    def _do_delete(self, idx):
+        root_dir = REPO_ROOT / "data" / self.repo_id.replace("/", "__")
+        tmp = root_dir.with_name(root_dir.name + "__editing")
+        shutil.rmtree(tmp, ignore_errors=True)
+        exe = os.path.join(os.path.dirname(sys.executable),
+                           "lerobot-edit-dataset" + (".exe" if os.name == "nt" else ""))
+        env = {**os.environ, "HF_HUB_OFFLINE": "1"}
+        try:
+            r = subprocess.run(
+                [exe, "--repo_id", self.repo_id, "--root", str(root_dir),
+                 "--operation.type", "delete_episodes", "--operation.episode_indices", f"[{idx}]",
+                 "--new_repo_id", self.repo_id, "--new_root", str(tmp)],
+                env=env, capture_output=True, text=True, timeout=900)
+            if r.returncode == 0 and tmp.exists():
+                shutil.rmtree(root_dir, ignore_errors=True)
+                tmp.rename(root_dir)
+            else:
+                shutil.rmtree(tmp, ignore_errors=True)
+                self._set(status=("Delete failed (see console)", "#c00"))
+                print(r.stdout[-800:], r.stderr[-1600:])
+        except Exception as exc:
+            shutil.rmtree(tmp, ignore_errors=True)
+            self._set(status=(f"Delete failed: {exc}", "#c00"))
+        self.root.after(0, self._start_worker)   # reconnect to the rebuilt dataset
 
     # -- settings ------------------------------------------------------------
     def _change_backend(self):
