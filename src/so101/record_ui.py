@@ -254,10 +254,9 @@ class App:
         for w in self.cmap.winfo_children():
             w.destroy()
         if self.input_mode == "reach":
-            legend = [("cursor on desk cam", "arm reaches that table spot"),
-                      ("scroll", "height fine-tune"), ("L / R click", "gripper open / close"),
-                      ("Enter / Backspace", "save / discard"),
-                      ("Tools ▸ Calibrate reach", "(re)teach the table mapping")]
+            legend = [("A / D", "rotate base"), ("W / S", "raise / lower shoulder"),
+                      ("Q / E", "wrist twist"), ("mouse on desk cam", "elbow + wrist bend"),
+                      ("L / R click", "gripper open / close"), ("Enter / Backspace", "save / discard")]
         elif self.input_mode == "desktop":
             legend = [("A / D", "rotate base"), ("W / S", "raise / lower"),
                       ("Q/E or scroll", "reach in / out (elbow)"), ("mouse on cams", "wrist roll / tilt"),
@@ -325,9 +324,9 @@ class App:
         elif k == "backspace" and down:
             self._cmd.put(("discard",))
         else:
-            from .desktop_control import DesktopController
-            if isinstance(self._input, DesktopController):
-                self._input.set_key(k, down)
+            ctrl = self._input          # DesktopController or ReachController both jog via keys
+            if hasattr(ctrl, "set_key"):
+                ctrl.set_key(k, down)
 
     # -- UI refresh (main thread, light) -------------------------------------
     def _refresh(self):

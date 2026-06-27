@@ -1,25 +1,29 @@
-"""Calibrated "reach toward the cursor" control for the SO-101.
+"""Hybrid mouse+keyboard control for the SO-101, with a calibrated mouse mapping.
 
-Point at a spot on the table in the desk camera and the arm reaches there. Rather
-than full inverse kinematics (which would need an exact URDF, camera calibration,
-and a normalized<->radian joint mapping the hardware doesn't hand us), this learns
-the map *directly from real arm poses*:
+Scheme:
+  * A / D  -> base   (shoulder_pan)      keyboard jog
+  * W / S  -> shoulder (shoulder_lift)   keyboard jog
+  * Q / E  -> wrist twist (wrist_roll)   keyboard jog
+  * mouse over the desk camera -> elbow + wrist bend (elbow_flex, wrist_flex)
+  * L / R click -> gripper open / close
 
-  Calibration: jog the arm so the gripper touches a spot on the table, then click
-  that spot in the desk camera. Repeat for ~6-8 spots spread across the workspace.
-  Each sample is (desk-image pixel u,v in 0..1) -> (the arm's joint angles there).
+The mouse part is calibrated rather than a raw velocity: instead of full inverse
+kinematics (which would need an exact URDF, camera calibration, and a normalized<->
+radian joint map the hardware doesn't give us), it learns the map *directly from real
+poses*:
 
-  Fit: a low-order polynomial surface  q_j = f_j(u, v)  per controlled joint,
-  least-squares over the samples. Anchored to actual poses, so it's exact at the
-  calibrated spots and interpolates smoothly between them. No kinematics or units.
+  Calibration: relax the arm, move the gripper by hand to each dot shown on the desk
+  camera, press Enter. Each sample is (desk-image pixel u,v) -> (elbow_flex, wrist_flex)
+  at that pose. A low-order polynomial surface q_j = f_j(u, v) is least-squares fit per
+  joint — exact at the calibrated dots, smooth between, no kinematics or units.
 
-  Runtime: cursor (u,v) over the desk camera -> evaluate the surfaces -> joint
-  targets; the controller eases toward them (rate-limited) so motion stays smooth.
+  Runtime: the cursor (u,v) over the desk camera evaluates the surfaces; elbow + wrist
+  bend ease toward them (rate-limited + speed-capped) while you aim base/shoulder/twist
+  with the keyboard.
 
 ReachController exposes the same interface as XboxTeleopController / DesktopController
 (connect / seed_targets / compute_action / disconnect, plus .dt and .cfg), so it drops
-into the same record/teleop worker. Gripper is on the mouse buttons, a manual height
-nudge on the scroll wheel.
+into the same record/teleop worker.
 """
 
 from __future__ import annotations
@@ -32,17 +36,24 @@ import numpy as np
 from . import REPO_ROOT, load_config
 from .controller import GRIPPER_MAX, GRIPPER_MIN, JOINT_MAX, JOINT_MIN, _clip
 
-# Joints the reach map drives. wrist_roll + gripper stay under manual/button control:
-# pan aims the base azimuth, lift+elbow set reach/height, wrist_flex keeps the
-# gripper angled down at the table.
-CONTROLLED = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex"]
+# Joints the MOUSE drives (and that calibration fits): elbow + wrist bend. The base
+# and shoulder are jogged with WASD and the wrist twist with Q/E (keyboard), so the
+# calibration only needs these two.
+CONTROLLED = ["elbow_flex", "wrist_flex"]
+
+# Keyboard jog: key (lowercase Tk keysym) -> (joint, direction).
+_KEYS = {
+    "a": ("shoulder_pan", -1), "d": ("shoulder_pan", +1),    # base
+    "w": ("shoulder_lift", -1), "s": ("shoulder_lift", +1),  # shoulder (W = raise)
+    "q": ("wrist_roll", -1), "e": ("wrist_roll", +1),        # wrist twist
+}
 
 CALIB_PATH = REPO_ROOT / ".ik_calib.json"
 
 # ---- tunables ----
+KEY_SPEED = 60.0      # normalized units/sec while a jog key is held
 EASE = 0.18           # fraction of the remaining gap closed per tick (smooth follow)
-REACH_MAX_SPEED = 38.0  # top speed cap (units/sec) for EVERY joint that follows the cursor
-SCROLL_STEP = 5.0     # elbow units per wheel notch (manual height fine-tune)
+REACH_MAX_SPEED = 38.0  # top speed cap (units/sec) for the mouse-driven joints
 GRIP_SPEED = 90.0     # gripper units/sec while a mouse button is held
 
 
@@ -107,10 +118,10 @@ class ReachController:
         self.targets: dict[str, float] = {}
         self.calib = load_calibration()
 
+        self._keys = {k: False for k in _KEYS}     # pre-seeded so no dict resize races
         self._lock = threading.Lock()
         self._u = self._v = 0.5     # latest cursor position over the desk view (0..1)
         self._active = False        # is the cursor currently over the desk view
-        self._scroll = 0.0
         self._lclick = False
         self._rclick = False
 
@@ -121,10 +132,10 @@ class ReachController:
     # -- lifecycle (match the other controllers) ----------------------------
     def connect(self):
         if self.calibrated:
-            print("Reach control: point at the table in the desk camera; the arm reaches there. "
-                  "Scroll = height, L/R click = gripper.")
+            print("Reach control: WASD = base/shoulder, Q/E = wrist twist, mouse on the desk "
+                  "camera = elbow + wrist bend, L/R click = gripper.")
         else:
-            print("Reach control: NOT CALIBRATED yet. Use Tools -> Calibrate reach first.")
+            print("Reach control: NOT CALIBRATED yet. Press 'Calibrate reach' first.")
 
     def disconnect(self):
         pass
@@ -134,13 +145,16 @@ class ReachController:
             self.targets[j] = float(observation.get(f"{j}.pos", 0.0))
 
     # -- event handlers (Tk main thread) ------------------------------------
+    def set_key(self, keysym, down):
+        if keysym in self._keys:
+            self._keys[keysym] = down
+
     def on_cursor(self, u, v, active):
         with self._lock:
             self._u, self._v, self._active = u, v, active
 
     def on_scroll(self, delta):
-        with self._lock:
-            self._scroll += delta
+        pass   # scroll unused in this scheme (elbow is on the mouse)
 
     def set_click(self, which, down):
         if which == "l":
@@ -150,13 +164,17 @@ class ReachController:
 
     # -- per-tick (worker thread) -------------------------------------------
     def compute_action(self):
+        # Keyboard jog: base + shoulder (WASD) and wrist twist (Q/E).
+        step = KEY_SPEED * self.dt
+        for k, (joint, d) in _KEYS.items():
+            if self._keys.get(k):
+                self.targets[joint] = _clip(self.targets[joint] + d * step, JOINT_MIN, JOINT_MAX)
+
         with self._lock:
             u, v, active = self._u, self._v, self._active
-            scroll = self._scroll
-            self._scroll = 0.0
 
-        # Cursor on the table -> ease the reach joints toward the fitted pose, but cap
-        # every joint's per-tick move so the whole arm never lunges (top-speed limit).
+        # Cursor on the desk camera -> ease elbow + wrist bend toward the fitted pose,
+        # capping the per-tick move so they never lunge (top-speed limit).
         if active and self.calib is not None:
             goal = eval_calibration(self.calib, u, v)
             max_step = REACH_MAX_SPEED * self.dt
@@ -165,11 +183,6 @@ class ReachController:
                 delta = (val - self.targets[j]) * EASE
                 delta = max(-max_step, min(max_step, delta))
                 self.targets[j] += delta
-
-        # Scroll = manual height fine-tune (nudges the elbow).
-        if scroll:
-            self.targets["elbow_flex"] = _clip(
-                self.targets["elbow_flex"] + (scroll / 120.0) * SCROLL_STEP, JOINT_MIN, JOINT_MAX)
 
         # Gripper on the mouse buttons (hold to move).
         grip = GRIP_SPEED * self.dt
