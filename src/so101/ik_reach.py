@@ -57,40 +57,82 @@ REACH_MAX_SPEED = 38.0  # top speed cap (units/sec) for the mouse-driven joints
 GRIP_SPEED = 90.0     # gripper units/sec while a mouse button is held
 
 
-def _features(u: float, v: float, degree: int) -> np.ndarray:
-    """Polynomial feature vector for an image point. degree 1 -> [1,u,v];
-    degree 2 -> [1,u,v,u^2,uv,v^2]."""
-    if degree >= 2:
-        return np.array([1.0, u, v, u * u, u * v, v * v])
-    return np.array([1.0, u, v])
-
-
-def _degree_for(n_samples: int) -> int:
-    """Use a quadratic surface when there's enough data, else fall back to linear."""
-    return 2 if n_samples >= 6 else 1
-
-
 def fit_calibration(samples: list[dict]) -> dict:
-    """Fit q_j = f_j(u, v) per controlled joint from calibration samples.
+    """Build the cursor -> (elbow, wrist) map from calibration samples.
 
     samples: [{"u":float, "v":float, "joints":{joint:value, ...}}, ...]
-    Returns {"degree":int, "coeffs":{joint:[...]}}.
+
+    The dots are a regular grid, so we store the captured joint value at each grid
+    node and interpolate BILINEARLY at runtime. Unlike a global polynomial, bilinear
+    interpolation is exact at every dot and stays a blend of the four surrounding real
+    poses in between — it can't overshoot to an extreme (e.g. the arm shooting straight
+    up) in the middle of the workspace. Falls back to a least-squares polynomial only
+    if the samples don't form a complete grid.
     """
     if len(samples) < 3:
         raise ValueError(f"Need at least 3 calibration points, got {len(samples)}.")
-    degree = _degree_for(len(samples))
+    grid = _try_grid(samples)
+    return grid if grid is not None else _poly_fit(samples)
+
+
+def _try_grid(samples: list[dict]) -> dict | None:
+    us = sorted({round(s["u"], 4) for s in samples})
+    vs = sorted({round(s["v"], 4) for s in samples})
+    if len(us) < 2 or len(vs) < 2 or len(us) * len(vs) != len(samples):
+        return None
+    nodes = {j: [[None] * len(us) for _ in vs] for j in CONTROLLED}
+    for s in samples:
+        ci, ri = us.index(round(s["u"], 4)), vs.index(round(s["v"], 4))
+        for j in CONTROLLED:
+            nodes[j][ri][ci] = float(s["joints"][j])
+    if any(val is None for j in CONTROLLED for row in nodes[j] for val in row):
+        return None      # incomplete grid -> let the polynomial fallback handle it
+    return {"type": "grid", "u": us, "v": vs, "nodes": nodes}
+
+
+def _poly_fit(samples: list[dict]) -> dict:
+    degree = 2 if len(samples) >= 6 else 1
     X = np.array([_features(s["u"], s["v"], degree) for s in samples])
     coeffs = {}
     for j in CONTROLLED:
         y = np.array([float(s["joints"][j]) for s in samples])
         c, *_ = np.linalg.lstsq(X, y, rcond=None)
         coeffs[j] = c.tolist()
-    return {"degree": degree, "coeffs": coeffs}
+    return {"type": "poly", "degree": degree, "coeffs": coeffs}
+
+
+def _features(u: float, v: float, degree: int) -> np.ndarray:
+    if degree >= 2:
+        return np.array([1.0, u, v, u * u, u * v, v * v])
+    return np.array([1.0, u, v])
+
+
+def _cell(coords: list[float], x: float) -> tuple[int, float]:
+    """Lower index + fraction for x within a sorted coordinate list, clamped to the
+    ends (so a cursor outside the calibrated grid sticks to the edge, never extrapolates)."""
+    if x <= coords[0]:
+        return 0, 0.0
+    if x >= coords[-1]:
+        return len(coords) - 2, 1.0
+    for i in range(len(coords) - 1):
+        if x < coords[i + 1]:
+            return i, (x - coords[i]) / (coords[i + 1] - coords[i])
+    return len(coords) - 2, 1.0
 
 
 def eval_calibration(calib: dict, u: float, v: float) -> dict:
-    """Evaluate the fitted surfaces at image point (u, v) -> {joint: value}."""
-    f = _features(u, v, calib["degree"])
+    """Evaluate the calibrated map at image point (u, v) -> {joint: value}."""
+    if calib.get("type") == "grid":
+        us, vs = calib["u"], calib["v"]
+        ci, fu = _cell(us, u)
+        ri, fv = _cell(vs, v)
+        out = {}
+        for j, grid in calib["nodes"].items():
+            top = grid[ri][ci] * (1 - fu) + grid[ri][ci + 1] * fu
+            bot = grid[ri + 1][ci] * (1 - fu) + grid[ri + 1][ci + 1] * fu
+            out[j] = top * (1 - fv) + bot * fv
+        return out
+    f = _features(u, v, calib["degree"])      # legacy polynomial calibration
     return {j: float(np.dot(c, f)) for j, c in calib["coeffs"].items()}
 
 
@@ -101,7 +143,9 @@ def save_calibration(calib: dict) -> None:
 def load_calibration() -> dict | None:
     try:
         calib = json.loads(CALIB_PATH.read_text(encoding="utf-8"))
-        if "coeffs" in calib and "degree" in calib:
+        if calib.get("type") == "grid" and "nodes" in calib:
+            return calib
+        if "coeffs" in calib and "degree" in calib:     # legacy polynomial file
             return calib
     except (FileNotFoundError, ValueError, KeyError):
         pass
