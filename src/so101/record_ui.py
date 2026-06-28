@@ -87,6 +87,7 @@ class App:
         self._calib_mode = False
         self._calib_samples: list = []
         self._calib_idx = 0
+        self._calib_base_ref = None      # base angle locked during reach calibration
         self._desk_cursor = (0.5, 0.5)   # latest cursor over the desk camera (normalized)
         self._calib_bar = None
 
@@ -443,9 +444,11 @@ class App:
                         recording = self._discard(recording, dataset)
                     elif cmd[0] == "watch" and not recording and not self._get("saving"):
                         dataset = self._watch(dataset, LeRobotDataset, repo_id, root_dir, cmd[1])
-                    elif cmd[0] == "calib_torque" and not sim and hasattr(robot, "bus"):
+                    elif cmd[0] == "calib_relax" and not sim and hasattr(robot, "bus"):
+                        # Free every joint to be hand-moved EXCEPT the base, which keeps
+                        # torque (holds its current angle) so it stays the locked reference.
                         try:
-                            (robot.bus.enable_torque if cmd[1] else robot.bus.disable_torque)()
+                            robot.bus.disable_torque([j for j in self._joints if j != "shoulder_pan"])
                         except Exception:
                             pass
 
@@ -650,20 +653,28 @@ class App:
             messagebox.showinfo("Calibrate reach",
                                 "Connect to the arm with the cameras live first.", parent=self.root)
             return
-        msg = ("Calibrate point-to-reach.\n\n"
-               "The arm will RELAX so you can move it by hand. A grid of dots appears on\n"
-               "the desk camera. For each RED dot:\n"
-               "  • move the gripper so its fingertips sit on that spot on the table\n"
+        joints = self._get("joints")
+        if not joints or "shoulder_pan" not in joints:
+            messagebox.showinfo("Calibrate reach",
+                                "Arm joints aren't reading yet — give it a moment and retry.", parent=self.root)
+            return
+        msg = ("Calibrate point-to-reach (elbow + wrist on the mouse).\n\n"
+               "FIRST aim the base with A/D where you want the workspace — it LOCKS there\n"
+               "as the reference for the whole calibration.\n\n"
+               "Then the rest of the arm RELAXES so you can move it by hand. For each RED dot\n"
+               "on the desk camera:\n"
+               "  • hand-move the shoulder/elbow/wrist so the gripper touches that spot\n"
                "  • press ENTER to capture   (Backspace = redo the previous dot)\n\n"
-               f"After all {len(_CALIB_DOTS)} dots it saves and switches to point-to-reach.\n\n"
+               f"After all {len(_CALIB_DOTS)} dots it saves and switches to point-to-reach.\n"
                "Hold the arm as it relaxes so it doesn't drop.")
         if not messagebox.askokcancel("Calibrate reach", msg, parent=self.root):
             return
+        self._calib_base_ref = float(joints["shoulder_pan"])   # lock base at its current angle
         self._calib_samples = []
         self._calib_idx = 0
         self._calib_mode = True
         self._set(calibrating=True)
-        self._cmd.put(("calib_torque", False))   # relax the arm (runs on the worker thread)
+        self._cmd.put(("calib_relax",))   # free all joints except the locked base
         self._show_calib_bar()
 
     def _show_calib_bar(self):
@@ -683,7 +694,7 @@ class App:
             return
         n = len(_CALIB_DOTS)
         self._calib_status.set(
-            f"CALIBRATE REACH — move the gripper to the RED dot on the table, then press ENTER.   "
+            "CALIBRATE REACH (base locked) — hand-move the gripper to the RED dot, then press ENTER.   "
             f"Dot {min(self._calib_idx + 1, n)} / {n}    (Backspace = redo last)")
 
     def _draw_calib_dots(self, img):
@@ -728,7 +739,9 @@ class App:
         from .ik_reach import fit_calibration, save_calibration
         ok = False
         try:
-            save_calibration(fit_calibration(self._calib_samples))
+            calib = fit_calibration(self._calib_samples)
+            calib["base_reference"] = self._calib_base_ref   # base angle the map assumes
+            save_calibration(calib)
             ok = True
         except Exception as exc:
             messagebox.showerror("Calibrate reach", f"Could not fit calibration:\n{exc}", parent=self.root)

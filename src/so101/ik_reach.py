@@ -117,6 +117,8 @@ class ReachController:
         self._joints = load_config("robot")["joints"]
         self.targets: dict[str, float] = {}
         self.calib = load_calibration()
+        # Base angle the elbow+wrist map was calibrated against (base stays on A/D).
+        self.base_reference = (self.calib or {}).get("base_reference")
 
         self._keys = {k: False for k in _KEYS}     # pre-seeded so no dict resize races
         self._lock = threading.Lock()
