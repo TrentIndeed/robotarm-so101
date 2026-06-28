@@ -793,13 +793,19 @@ class App:
                          f"--robot.port={cfg['port']}", f"--robot.id={cfg['id']}"])
 
     def _train(self):
-        root = REPO_ROOT / "data" / self.repo_id.replace("/", "__")
-        out = REPO_ROOT / "outputs" / "train" / "act"
-        device = _load_settings().get("tr_device", "cpu")
-        self._launch_exe("lerobot-train", [
-            f"--dataset.repo_id={self.repo_id}", f"--dataset.root={root}",
-            "--policy.type=act", f"--policy.device={device}",
-            f"--output_dir={out}", "--steps=20000"])
+        policy = simpledialog.askstring(
+            "Train", "Policy to fine-tune — 'smolvla' (vision-language, needs a GPU) "
+            "or 'act' (lighter baseline):", initialvalue="smolvla", parent=self.root)
+        if not policy:
+            return
+        policy = policy.strip().lower()
+        if policy not in ("smolvla", "act"):
+            messagebox.showerror("Train", "Policy must be 'smolvla' or 'act'.", parent=self.root)
+            return
+        device = _load_settings().get("tr_device", "cuda")
+        # Opens a console running `python -m so101.train` (handles Hub access for SmolVLA).
+        self._launch_module("so101.train",
+                            ["--policy", policy, "--dataset", self.repo_id, "--device", device])
 
     def _on_close(self):
         self._set(running=False)
