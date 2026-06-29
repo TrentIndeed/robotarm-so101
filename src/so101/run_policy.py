@@ -101,6 +101,44 @@ def _show(obs: dict, cam_names) -> None:
     cv2.waitKey(1)
 
 
+def _latest_checkpoint() -> str | None:
+    """Newest trained checkpoint under outputs/train/<policy>/checkpoints/<step>/pretrained_model."""
+    cps = sorted((REPO_ROOT / "outputs" / "train").glob("*/checkpoints/*/pretrained_model"),
+                 key=lambda p: p.stat().st_mtime)
+    return str(cps[-1]) if cps else None
+
+
+def run_from_launcher(argv: list[str]) -> None:
+    """`./run policy [--real] [--checkpoint ...]` — run the latest policy with sane defaults."""
+    p = argparse.ArgumentParser(prog="./run policy",
+                                description="Run your latest trained policy (sim by default).")
+    p.add_argument("--checkpoint", default=None, help="default: newest under outputs/train/")
+    p.add_argument("--dataset", default=None, help="for normalization stats; default: your recording dataset")
+    p.add_argument("--real", action="store_true", help="run on the REAL arm (default: MuJoCo sim)")
+    p.add_argument("--task", default=DEFAULT_TASK)
+    p.add_argument("--hz", type=float, default=30.0)
+    p.add_argument("--no-display", action="store_true")
+    a = p.parse_args(argv)
+
+    ckpt = a.checkpoint or _latest_checkpoint()
+    if not ckpt:
+        raise SystemExit("No trained checkpoint found under outputs/train/. Train one first "
+                         "(see TRAINING.md) or pass --checkpoint.")
+    dataset = a.dataset
+    if not dataset:
+        try:
+            import json
+            dataset = json.loads((REPO_ROOT / ".app_settings.json").read_text()).get("rec_repo")
+        except Exception:
+            dataset = None
+        dataset = dataset or "local/so101_pick_place"
+
+    print(f"Policy:     {ckpt}")
+    print(f"Dataset:    {dataset}  (normalization stats)")
+    print(f"Backend:    {'REAL arm — keep a hand near the e-stop' if a.real else 'MuJoCo sim'}")
+    run(ckpt, dataset, sim=not a.real, task=a.task, hz=a.hz, display=not a.no_display)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a trained policy on the SO-101 (sim or real)")
     parser.add_argument("--checkpoint", required=True, help="path to a trained policy (pretrained_model dir)")
