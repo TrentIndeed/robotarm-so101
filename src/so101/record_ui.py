@@ -424,6 +424,8 @@ class App:
             recording = False
             prev: dict = {}
             dt = 1.0 / fps
+            io_fails = 0        # consecutive camera/arm read failures (transient tolerance)
+            ctrl_fails = 0      # consecutive controller-read failures (drives a re-grab)
 
             def pressed(b):
                 now = bool(ctrl.joystick.get_button(b))
@@ -433,40 +435,91 @@ class App:
 
             while self._get("running"):
                 t0 = time.perf_counter()
+                # Commands — a bad one is logged-and-skipped, never fatal.
                 while True:
                     try:
                         cmd = self._cmd.get_nowait()
                     except queue.Empty:
                         break
-                    if cmd[0] == "toggle":
-                        recording = self._toggle(recording, dataset, sim, robot)
-                    elif cmd[0] == "discard":
-                        recording = self._discard(recording, dataset)
-                    elif cmd[0] == "watch" and not recording and not self._get("saving"):
-                        dataset = self._watch(dataset, LeRobotDataset, repo_id, root_dir, cmd[1])
-                    elif cmd[0] == "calib_relax" and not sim and hasattr(robot, "bus"):
-                        # Free every joint to be hand-moved EXCEPT the base, which keeps
-                        # torque (holds its current angle) so it stays the locked reference.
-                        try:
-                            robot.bus.disable_torque([j for j in self._joints if j != "shoulder_pan"])
-                        except Exception:
-                            pass
-
-                obs = robot.get_observation()
-                if ctrl is not None and not self._get("calibrating"):
-                    action = ctrl.compute_action()
-                    robot.send_action(action)
-                    if sim:
-                        robot.step(n_steps)
-                    if hasattr(ctrl, "joystick"):    # Xbox hardware buttons for record control
-                        if pressed(btn["episode_done"]):
+                    try:
+                        if cmd[0] == "toggle":
                             recording = self._toggle(recording, dataset, sim, robot)
-                        elif recording and pressed(btn["episode_cancel"]):
+                        elif cmd[0] == "discard":
                             recording = self._discard(recording, dataset)
+                        elif cmd[0] == "watch" and not recording and not self._get("saving"):
+                            dataset = self._watch(dataset, LeRobotDataset, repo_id, root_dir, cmd[1])
+                        elif cmd[0] == "calib_relax" and not sim and hasattr(robot, "bus"):
+                            # Free every joint to be hand-moved EXCEPT the base, which keeps
+                            # torque (holds its current angle) so it stays the locked reference.
+                            robot.bus.disable_torque([j for j in self._joints if j != "shoulder_pan"])
+                    except Exception:
+                        pass
+
+                # Read sensors. A momentary camera/USB blip raises here — tolerate it:
+                # keep the last frame, abort any in-progress take (so it isn't corrupted),
+                # and retry next tick. The worker NEVER tears down on a transient hiccup.
+                try:
+                    obs = robot.get_observation()
+                except Exception as exc:
+                    io_fails += 1
                     if recording:
-                        of = build_dataset_frame(dataset.features, obs, prefix=OBS_STR)
-                        af = build_dataset_frame(dataset.features, action, prefix=ACTION)
-                        dataset.add_frame({**of, **af, "task": self.task})
+                        try:
+                            recording = self._discard(recording, dataset)
+                        except Exception:
+                            recording = False
+                    msg = ("Cameras/arm reconnecting… check the cable" if io_fails > fps * 3
+                           else "Signal hiccup — recovering…")
+                    self._set(status=(msg, "#a60"))
+                    time.sleep(0.15)
+                    continue
+                if io_fails:                       # recovered — restore the normal status
+                    io_fails = 0
+                    self._set(status=(("RECORDING" if recording else
+                                       ("idle" if ctrl else "cameras only — no controller")),
+                                      "#c00" if recording else ("#0a0" if ctrl else "#a60")))
+
+                if ctrl is not None and not self._get("calibrating"):
+                    # A controller drop holds the arm (action=None) instead of crashing;
+                    # for the Xbox pad we periodically try to re-grab it after a replug.
+                    try:
+                        action = ctrl.compute_action()
+                        ctrl_fails = 0
+                    except Exception as cexc:
+                        action = None
+                        ctrl_fails += 1
+                        self._set(status=(f"Controller dropped — holding ({cexc})", "#a60"))
+                        if hasattr(ctrl, "joystick") and ctrl_fails % max(1, int(fps)) == 0:
+                            try:
+                                ctrl.connect()
+                                ctrl.seed_targets(obs)
+                            except Exception:
+                                pass
+                    if action is not None:
+                        try:
+                            robot.send_action(action)
+                            if sim:
+                                robot.step(n_steps)
+                        except Exception:
+                            pass                   # transient write hiccup; retry next tick
+                        if hasattr(ctrl, "joystick"):
+                            try:
+                                if pressed(btn["episode_done"]):
+                                    recording = self._toggle(recording, dataset, sim, robot)
+                                elif recording and pressed(btn["episode_cancel"]):
+                                    recording = self._discard(recording, dataset)
+                            except Exception:
+                                pass
+                        if recording:
+                            try:
+                                of = build_dataset_frame(dataset.features, obs, prefix=OBS_STR)
+                                af = build_dataset_frame(dataset.features, action, prefix=ACTION)
+                                dataset.add_frame({**of, **af, "task": self.task})
+                            except Exception:
+                                try:
+                                    recording = self._discard(recording, dataset)
+                                except Exception:
+                                    recording = False
+                                self._set(status=("Take aborted — frame error. Recording stopped.", "#a60"))
 
                 self._set(frames={c: obs[c] for c in cam_names if c in obs},
                           joints={j: float(obs.get(f"{j}.pos", 0.0)) for j in self._joints})
