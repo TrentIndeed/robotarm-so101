@@ -30,6 +30,7 @@ DEFAULT_TASK = "Pick up the small object and place it at the target."
 
 
 def run(checkpoint: str, dataset_repo_id: str, sim: bool, task: str, hz: float, display: bool) -> None:
+    import numpy as np
     import torch
     from lerobot.configs.policies import PreTrainedConfig
     from lerobot.datasets.feature_utils import hw_to_dataset_features
@@ -74,6 +75,10 @@ def run(checkpoint: str, dataset_repo_id: str, sim: bool, task: str, hz: float, 
         **hw_to_dataset_features(robot.action_features, ACTION),
     }
 
+    # The policy expects observation.state (a single array) + observation.images.<cam>,
+    # but robot.get_observation() returns per-joint {joint}.pos floats + camera arrays.
+    state_keys = ds_meta.features["observation.state"]["names"]   # ['shoulder_pan.pos', ...]
+
     robot.connect()
     policy.reset()
     preprocessor.reset()
@@ -88,8 +93,12 @@ def run(checkpoint: str, dataset_repo_id: str, sim: bool, task: str, hz: float, 
             t0 = time.perf_counter()
 
             obs = robot.get_observation()
+            # Frame the raw obs into the policy's expected feature dict.
+            frame = {"observation.state": np.array([obs[k] for k in state_keys], dtype=np.float32)}
+            for cam in cam_names:
+                frame[f"observation.images.{cam}"] = obs[cam]
             action_tensor = predict_action(
-                obs, policy, device, preprocessor, postprocessor,
+                frame, policy, device, preprocessor, postprocessor,
                 use_amp=False, task=task, robot_type=robot.name,
             )
             robot.send_action(make_robot_action(action_tensor, ds_features))
