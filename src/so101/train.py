@@ -33,7 +33,7 @@ SMOLVLA_BASE = "lerobot/smolvla_base"
 
 
 def build_args(policy: str, dataset: str, device: str, steps: int,
-               batch_size: int, output_dir: str) -> list[str]:
+               batch_size: int, output_dir: str, save_freq: int) -> list[str]:
     """The lerobot-train CLI arguments for this run."""
     root = REPO_ROOT / "data" / dataset.replace("/", "__")
     args = [
@@ -43,6 +43,7 @@ def build_args(policy: str, dataset: str, device: str, steps: int,
         f"--policy.device={device}",
         f"--steps={steps}",
         f"--batch_size={batch_size}",
+        f"--save_freq={save_freq}",     # checkpoint often so a time-boxed run is never lost
         "--wandb.enable=false",
     ]
     if policy == "smolvla":
@@ -67,12 +68,14 @@ def main() -> None:
     p.add_argument("--device", default="cuda", help="cuda | cpu | mps")
     p.add_argument("--steps", type=int, default=20000)
     p.add_argument("--batch-size", type=int, default=64, help="lower (32/16) if you OOM")
+    p.add_argument("--save-freq", type=int, default=1000, help="steps between checkpoints")
     p.add_argument("--output-dir", default=None)
     p.add_argument("--print-only", action="store_true", help="print the command, don't run it")
     a = p.parse_args()
 
     out = a.output_dir or str(REPO_ROOT / "outputs" / "train" / a.policy)
-    cmd = [_train_exe(), *build_args(a.policy, a.dataset, a.device, a.steps, a.batch_size, out)]
+    cmd = [_train_exe(),
+           *build_args(a.policy, a.dataset, a.device, a.steps, a.batch_size, out, a.save_freq)]
 
     print("Training command:\n  " + " \\\n    ".join(cmd) + "\n")
     if a.print_only:
