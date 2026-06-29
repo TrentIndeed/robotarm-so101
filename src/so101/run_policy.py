@@ -43,12 +43,25 @@ def run(checkpoint: str, dataset_repo_id: str, sim: bool, task: str, hz: float, 
     # --- load the policy + its normalization processors from the checkpoint ---
     policy_cfg = PreTrainedConfig.from_pretrained(checkpoint)
     policy_cfg.pretrained_path = checkpoint
+    # The checkpoint was trained on GPU (device='cuda' baked into the config + processors).
+    # Use whatever THIS machine has so eval works on a CPU-only box, and override the
+    # processors' device too (else their device_processor step asserts CUDA).
+    if torch.cuda.is_available():
+        dev = "cuda"
+    elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        dev = "mps"
+    else:
+        dev = "cpu"
+    policy_cfg.device = dev
+
     ds_root = REPO_ROOT / "data" / dataset_repo_id.replace("/", "__")
     ds_meta = LeRobotDatasetMetadata(dataset_repo_id, root=ds_root)
 
     policy = make_policy(policy_cfg, ds_meta=ds_meta)
     preprocessor, postprocessor = make_pre_post_processors(
-        policy_cfg, pretrained_path=checkpoint, dataset_stats=ds_meta.stats
+        policy_cfg, pretrained_path=checkpoint, dataset_stats=ds_meta.stats,
+        preprocessor_overrides={"device_processor": {"device": dev}},
+        postprocessor_overrides={"device_processor": {"device": dev}},
     )
     device = get_safe_torch_device(policy_cfg.device)
     policy.eval()
